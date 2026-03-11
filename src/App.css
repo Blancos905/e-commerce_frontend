@@ -283,6 +283,57 @@ button:disabled {
   }
 }
 
+/* Sezione Aumenti di prezzo */
+.aumenti-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.aumenti-global {
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.aumenti-global h3 {
+  margin: 0 0 0.25rem 0;
+  font-size: 1rem;
+}
+
+.aumenti-global-desc {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.aumenti-tables {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  align-items: start;
+}
+
+.aumenti-table-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.aumenti-table-block h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.aumenti-table-desc {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.table-wrapper-compact {
+  max-height: 50vh;
+}
+
 .prices-grid {
   display: grid;
   grid-template-columns: minmax(220px, 320px) 1fr;
@@ -536,12 +587,20 @@ button:disabled {
 }
 
 @media (max-width: 1024px) {
+  .aumenti-tables {
+    grid-template-columns: 1fr;
+  }
+
   .prices-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 768px) {
+  .aumenti-tables {
+    grid-template-columns: 1fr;
+  }
+
   .prices-grid {
     grid-template-columns: 1fr;
   }

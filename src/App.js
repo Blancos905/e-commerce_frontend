@@ -1,5 +1,5 @@
 import './App.css';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import apiClient from './apiClient';
 
 function App() {
@@ -49,6 +49,7 @@ function App() {
   const [historyPreviewName, setHistoryPreviewName] = useState('');
   const [historyPreviewText, setHistoryPreviewText] = useState('');
   const [activeCategoryPage, setActiveCategoryPage] = useState('Computer');
+  const savingProductRef = useRef(false);
 
   const selectedSupplier = suppliers.find(
     (s) => String(s.id) === String(selectedSupplierId)
@@ -57,6 +58,17 @@ function App() {
   const categoryRank = (name) => {
     const idx = MAIN_CATEGORIES_ORDER.indexOf(name);
     return idx === -1 ? 999 : idx;
+  };
+
+  /** Rincaro percentuale effettivamente applicato (stessa priorità del backend). */
+  const getRincaroApplicato = (p) => {
+    if (p.aumentoPercentuale != null) return p.aumentoPercentuale;
+    if (p.categoria && p.categoria.aumentoPercentuale != null)
+      return p.categoria.aumentoPercentuale;
+    if (p.fornitore && p.fornitore.aumentoPercentuale != null)
+      return p.fornitore.aumentoPercentuale;
+    if (globalIncrease !== '' && globalIncrease != null) return Number(globalIncrease);
+    return null;
   };
 
   const sortedCategories = [...categories].sort((a, b) => {
@@ -303,24 +315,30 @@ function App() {
       }
     } catch (e) {
       const status = e?.response?.status;
-      const data = e?.response?.data;
-      const backendMessage =
-        (typeof data === 'string' && data) ||
-        data?.message ||
-        data?.error ||
-        data?.detail;
-      const details = [
-        status ? `HTTP ${status}` : null,
-        backendMessage ? String(backendMessage) : null,
-      ]
-        .filter(Boolean)
-        .join(' - ');
+      if (status === 413) {
+        setError(
+          'File troppo grande (HTTP 413). Il server accetta file fino a 50 MB. Riduci le dimensioni del file o dividilo in parti più piccole.'
+        );
+      } else {
+        const data = e?.response?.data;
+        const backendMessage =
+          (typeof data === 'string' && data) ||
+          data?.message ||
+          data?.error ||
+          data?.detail;
+        const details = [
+          status ? `HTTP ${status}` : null,
+          backendMessage ? String(backendMessage) : null,
+        ]
+          .filter(Boolean)
+          .join(' - ');
 
-      setError(
-        details
-          ? `Errore durante l'importazione del file (${details})`
-          : "Errore durante l'importazione del file"
-      );
+        setError(
+          details
+            ? `Errore durante l'importazione del file (${details})`
+            : "Errore durante l'importazione del file"
+        );
+      }
     } finally {
       setUploading(false);
     }
@@ -342,23 +360,29 @@ function App() {
       await loadSupplierImports(supplierId);
     } catch (e) {
       const status = e?.response?.status;
-      const data = e?.response?.data;
-      const backendMessage =
-        (typeof data === 'string' && data) ||
-        data?.message ||
-        data?.error ||
-        data?.detail;
-      const details = [
-        status ? `HTTP ${status}` : null,
-        backendMessage ? String(backendMessage) : null,
-      ]
-        .filter(Boolean)
-        .join(' - ');
-      setError(
-        details
-          ? `Errore durante il salvataggio del CSV (${details})`
-          : 'Errore durante il salvataggio del CSV'
-      );
+      if (status === 413) {
+        setError(
+          'File troppo grande (HTTP 413). Il server accetta file fino a 50 MB. Riduci le dimensioni del file o dividilo in parti più piccole.'
+        );
+      } else {
+        const data = e?.response?.data;
+        const backendMessage =
+          (typeof data === 'string' && data) ||
+          data?.message ||
+          data?.error ||
+          data?.detail;
+        const details = [
+          status ? `HTTP ${status}` : null,
+          backendMessage ? String(backendMessage) : null,
+        ]
+          .filter(Boolean)
+          .join(' - ');
+        setError(
+          details
+            ? `Errore durante il salvataggio del CSV (${details})`
+            : 'Errore durante il salvataggio del CSV'
+        );
+      }
     } finally {
       setUploading(false);
     }
@@ -400,16 +424,19 @@ function App() {
     if (supplierId) {
       setSelectedSupplierId(supplierId);
     }
-    try {
-      const text = await file.text();
-      setCsvPreviewName(file.name || '');
-      // evitiamo preview infinite: mostriamo max ~3000 caratteri
-      setCsvPreviewText(
-        text.length > 3000 ? text.slice(0, 3000) + '\n...\n' : text
-      );
-    } catch (e) {
-      setCsvPreviewName(file.name || '');
-      setCsvPreviewText('');
+    setCsvPreviewName(file.name || '');
+    const isExcel = /\.(xlsx|xls|xml)$/i.test(file.name || '');
+    if (isExcel) {
+      setCsvPreviewText('[File Excel/XML - anteprima non disponibile. Puoi procedere con "Salva in cartella"].');
+    } else {
+      try {
+        const text = await file.text();
+        setCsvPreviewText(
+          text.length > 3000 ? text.slice(0, 3000) + '\n...\n' : text
+        );
+      } catch (e) {
+        setCsvPreviewText('');
+      }
     }
     setPendingImport({ endpoint, file, supplierId });
   };
@@ -494,13 +521,24 @@ function App() {
 
   const handleCategoryIncreaseChange = async (categoryId, value) => {
     try {
-      await apiClient.put(`/categories/${categoryId}/increase`, null, {
-        params: { percent: value },
-      });
+      const params = value === '' || value == null ? {} : { percent: Number(value) };
+      await apiClient.put(`/categories/${categoryId}/increase`, null, { params });
       await loadCategories();
-      await loadProducts();
+      await loadProducts(filters.categoria ? { categoria: filters.categoria } : {});
     } catch (e) {
       setError("Errore nel salvataggio dell'aumento categoria");
+    }
+  };
+
+  const handleSupplierIncreaseChange = async (supplierId, value) => {
+    try {
+      await apiClient.put(`/suppliers/${supplierId}/increase`, null, {
+        params: { percent: value },
+      });
+      await loadSuppliers();
+      await loadProducts();
+    } catch (e) {
+      setError("Errore nel salvataggio dell'aumento fornitore");
     }
   };
 
@@ -540,10 +578,11 @@ function App() {
 
   const handleProductRowClick = (product) => {
     setSelectedProduct(product);
+    const pb = product.prezzoBase;
     setProductForm({
       nome: product.nome || '',
       descrizione: product.descrizione || '',
-      prezzoBase: product.prezzoBase ?? '',
+      prezzoBase: pb != null && pb !== '' ? String(pb) : '',
       aumentoPercentuale: product.aumentoPercentuale ?? '',
       categoriaId: product.categoria ? product.categoria.id : '',
     });
@@ -560,36 +599,67 @@ function App() {
   const handleProductSave = async (e) => {
     e.preventDefault();
     if (!selectedProduct) return;
+    if (savingProductRef.current) return;
+    savingProductRef.current = true;
     setSavingProduct(true);
     setError('');
     try {
-      const payload = {
-        ...selectedProduct,
-        nome: productForm.nome,
-        descrizione: productForm.descrizione,
-        prezzoBase:
-          productForm.prezzoBase === ''
-            ? null
-            : Number(productForm.prezzoBase),
-        aumentoPercentuale:
-          productForm.aumentoPercentuale === ''
-            ? null
-            : Number(productForm.aumentoPercentuale),
-        categoriaId: productForm.categoriaId || null,
+      const form = e.target;
+      const elPrezzo = form.elements?.prezzoBase ?? form.querySelector?.('[name="prezzoBase"]');
+      const rawPrezzo = elPrezzo?.value ?? productForm.prezzoBase;
+      const parsePrezzo = (v) => {
+        if (v === '' || v == null || v === undefined) return null;
+        const s = String(v).trim().replace(',', '.');
+        if (!s) return null;
+        const n = parseFloat(s);
+        return Number.isNaN(n) ? null : n;
       };
-      await apiClient.put(`/products/${selectedProduct.id}`, payload);
-      // Ricarica mantenendo i filtri correnti (inclusa la categoria/pagina attiva)
+      const prezzoBaseVal = parsePrezzo(rawPrezzo);
+      const payload = {
+        nome: form.nome?.value ?? productForm.nome,
+        descrizione: form.descrizione?.value ?? productForm.descrizione,
+        prezzoBase: prezzoBaseVal,
+        aumentoPercentuale: (() => {
+          const v = form.aumentoPercentuale?.value ?? productForm.aumentoPercentuale;
+          return v === '' || v == null ? null : Number(v);
+        })(),
+        categoriaId: (() => {
+          const v = form.categoriaId?.value ?? productForm.categoriaId;
+          return v && v !== '' ? (typeof v === 'number' ? v : Number(v)) : null;
+        })(),
+      };
+      const response = await apiClient.put(`/products/${selectedProduct.id}`, payload);
+      const savedProduct = response.data;
+      const categoryChanged =
+        (savedProduct.categoria?.id ?? null) !==
+        (selectedProduct.categoria?.id ?? null);
       const params = {};
       if (filters.nome) params.nome = filters.nome;
       if (filters.sku) params.sku = filters.sku;
-      const currentCategoryFilter = filters.categoria || activeCategoryPage;
-      if (currentCategoryFilter) {
-        params.categoria = currentCategoryFilter;
+      if (categoryChanged) {
+        const newCategory = savedProduct.categoria?.nome || '';
+        if (newCategory || filters.categoria || activeCategoryPage) {
+          params.categoria = newCategory || filters.categoria || activeCategoryPage;
+        }
+        setActiveCategoryPage(newCategory || activeCategoryPage);
+        setFilters((prev) => ({ ...prev, categoria: newCategory }));
+      } else if (filters.categoria || activeCategoryPage) {
+        params.categoria = filters.categoria || activeCategoryPage;
       }
       await loadProducts(params);
+      setSelectedProduct(savedProduct);
+      const spb = savedProduct.prezzoBase;
+      setProductForm({
+        nome: savedProduct.nome || '',
+        descrizione: savedProduct.descrizione || '',
+        prezzoBase: spb != null && spb !== '' ? String(spb) : '',
+        aumentoPercentuale: savedProduct.aumentoPercentuale ?? '',
+        categoriaId: savedProduct.categoria ? savedProduct.categoria.id : '',
+      });
     } catch (e) {
       setError('Errore nel salvataggio del prodotto');
     } finally {
+      savingProductRef.current = false;
       setSavingProduct(false);
     }
   };
@@ -923,8 +993,10 @@ function App() {
                         <th>SKU</th>
                         <th>Categoria</th>
                         <th>Nome</th>
+                        <th>Fornitore</th>
                         <th>Aumento categoria (%)</th>
                         <th>Aumento specifico prodotto (%)</th>
+                        <th>Rincaro applicato (%)</th>
                         <th>Prezzo base</th>
                         <th>Prezzo finale</th>
                         <th>Documenti</th>
@@ -934,7 +1006,7 @@ function App() {
                     <tbody>
                       {products.length === 0 && (
                         <tr>
-                          <td colSpan="9">Nessun prodotto trovato</td>
+                          <td colSpan="11">Nessun prodotto trovato</td>
                         </tr>
                       )}
                       {products.map((p) => (
@@ -951,6 +1023,11 @@ function App() {
                           <td>{p.categoria ? p.categoria.nome : ''}</td>
                           <td>{p.nome}</td>
                           <td>
+                            {p.fornitore
+                              ? (p.fornitore.codice ? p.fornitore.codice + ' - ' : '') + p.fornitore.nome
+                              : '—'}
+                          </td>
+                          <td>
                             {p.categoria && p.categoria.aumentoPercentuale != null
                               ? p.categoria.aumentoPercentuale
                               : ''}
@@ -959,6 +1036,9 @@ function App() {
                             {p.aumentoPercentuale != null
                               ? p.aumentoPercentuale
                               : ''}
+                          </td>
+                          <td>
+                            {getRincaroApplicato(p) != null ? getRincaroApplicato(p) : '—'}
                           </td>
                           <td>{p.prezzoBase}</td>
                           <td>{p.prezzoFinale}</td>
@@ -1026,7 +1106,7 @@ function App() {
                             type="number"
                             step="0.01"
                             name="prezzoBase"
-                            value={productForm.prezzoBase}
+                            value={productForm.prezzoBase ?? ''}
                             onChange={handleProductFormChange}
                           />
                         </label>
@@ -1199,7 +1279,7 @@ function App() {
                             >
                               <input
                                 type="file"
-                                accept=".csv"
+                                accept=".csv,.xlsx,.xls,.xml"
                                 onChange={(e) => {
                                   // Se scegli un CSV da una riga, selezioniamo quel fornitore
                                   // così preview e storico sono coerenti con il file scelto.
@@ -1335,7 +1415,7 @@ function App() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                     <input
                       type="file"
-                      accept=".csv"
+                      accept=".csv,.xlsx,.xls,.xml"
                       disabled={uploading}
                       onChange={(e) =>
                         handleImportWithPreview(
@@ -1557,72 +1637,110 @@ function App() {
         )}
 
         {activeNav === 'aumenti' && (
-          <section className="card">
+          <section className="card aumenti-section">
             <h2>Aumenti di prezzo</h2>
-            <div className="category-layout">
-              <div>
-                <h3>Impostazioni aumenti</h3>
-                <div className="prices-grid">
-                  <div>
-                    <h4>Aumento globale (%)</h4>
-                    <div className="inline-form">
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={globalIncrease}
-                        onChange={(e) => setGlobalIncrease(e.target.value)}
-                      />
-                      <button type="button" onClick={handleGlobalIncreaseSave}>
-                        Salva
-                      </button>
-                    </div>
-                  </div>
-                  <div>
-                    <h4>Aumenti per categoria (%)</h4>
-                    <div className="table-wrapper">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Categoria</th>
-                            <th>Aumento (%)</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {categories.length === 0 && (
-                            <tr>
-                              <td colSpan="2">Nessuna categoria</td>
-                            </tr>
-                          )}
-                          {sortedCategories.map((c) => (
-                            <tr key={c.id}>
-                              <td>
-                                <span
-                                  className={
-                                    c.parent ? 'category-name-sub' : 'category-name-main'
-                                  }
-                                >
-                                  {c.nome}
-                                </span>
-                              </td>
-                              <td>
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  defaultValue={c.aumentoPercentuale || ''}
-                                  onBlur={(e) =>
-                                    handleCategoryIncreaseChange(
-                                      c.id,
-                                      e.target.value
-                                    )
-                                  }
-                                />
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
+
+            <div className="aumenti-global">
+              <h3>Aumento globale</h3>
+              <p className="aumenti-global-desc">Si applica a tutti i prodotti quando non c’è aumento specifico per categoria o fornitore.</p>
+              <div className="inline-form">
+                <input
+                  type="number"
+                  step="0.01"
+                  placeholder="%"
+                  value={globalIncrease}
+                  onChange={(e) => setGlobalIncrease(e.target.value)}
+                />
+                <button type="button" onClick={handleGlobalIncreaseSave}>
+                  Salva
+                </button>
+              </div>
+            </div>
+
+            <div className="aumenti-tables">
+              <div className="aumenti-table-block">
+                <h3>Aumenti per categoria</h3>
+                <p className="aumenti-table-desc">Priorità maggiore dell’aumento globale.</p>
+                <div className="table-wrapper table-wrapper-compact">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Categoria</th>
+                        <th>Aumento (%)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {categories.length === 0 && (
+                        <tr>
+                          <td colSpan="2">Nessuna categoria</td>
+                        </tr>
+                      )}
+                      {sortedCategories.map((c) => (
+                        <tr key={c.id}>
+                          <td>
+                            <span
+                              className={
+                                c.parent ? 'category-name-sub' : 'category-name-main'
+                              }
+                            >
+                              {c.nome}
+                            </span>
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              step="0.01"
+                              defaultValue={c.aumentoPercentuale || ''}
+                              onBlur={(e) =>
+                                handleCategoryIncreaseChange(c.id, e.target.value)
+                              }
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="aumenti-table-block">
+                <h3>Aumenti per fornitore</h3>
+                <p className="aumenti-table-desc">Priorità maggiore dell’aumento globale.</p>
+                <div className="table-wrapper table-wrapper-compact">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Fornitore</th>
+                        <th>Aumento (%)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {suppliers.length === 0 && (
+                        <tr>
+                          <td colSpan="2">Nessun fornitore presente</td>
+                        </tr>
+                      )}
+                      {suppliers.map((s) => (
+                        <tr key={s.id}>
+                          <td>
+                            <span className="category-name-main">
+                              {s.codice ? `${s.codice} - ` : ''}{s.nome}
+                            </span>
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              step="0.01"
+                              defaultValue={s.aumentoPercentuale || ''}
+                              onBlur={(e) =>
+                                handleSupplierIncreaseChange(s.id, e.target.value)
+                              }
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>
