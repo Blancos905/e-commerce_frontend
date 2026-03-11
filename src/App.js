@@ -1,23 +1,1634 @@
-import logo from './logo.svg';
 import './App.css';
+import React, { useEffect, useState } from 'react';
+import apiClient from './apiClient';
 
 function App() {
+  const MAIN_CATEGORIES_ORDER = [
+    'Computer',
+    'Accessori',
+    'Networking',
+    'Elettronica',
+    'Multimedia',
+    'Cavi',
+    'Ufficio',
+    'Scuola e Laboratori',
+    'Best sellers',
+    'Videosorveglianza',
+  ];
+
+  const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+  const [filters, setFilters] = useState({ nome: '', sku: '', categoria: '' });
+  const [globalIncrease, setGlobalIncrease] = useState('');
+  const [activeNav, setActiveNav] = useState('catalogo');
+  const [selectedSupplierId, setSelectedSupplierId] = useState('');
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [productForm, setProductForm] = useState({
+    nome: '',
+    descrizione: '',
+    prezzoBase: '',
+    aumentoPercentuale: '',
+    categoriaId: '',
+  });
+  const [newSupplierName, setNewSupplierName] = useState('');
+  const [newSupplierCode, setNewSupplierCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [savingProduct, setSavingProduct] = useState(false);
+  const [savingCategory, setSavingCategory] = useState(false);
+  const [savingSupplier, setSavingSupplier] = useState(false);
+  const [error, setError] = useState('');
+  const [supplierCsvMessage, setSupplierCsvMessage] = useState('');
+  const [supplierImports, setSupplierImports] = useState([]);
+  const [loadingSupplierImports, setLoadingSupplierImports] = useState(false);
+  const [supplierImportsError, setSupplierImportsError] = useState('');
+  const [csvPreviewName, setCsvPreviewName] = useState('');
+  const [csvPreviewText, setCsvPreviewText] = useState('');
+  const [pendingImport, setPendingImport] = useState(null);
+  const [historyPreviewName, setHistoryPreviewName] = useState('');
+  const [historyPreviewText, setHistoryPreviewText] = useState('');
+  const [activeCategoryPage, setActiveCategoryPage] = useState('Computer');
+
+  const selectedSupplier = suppliers.find(
+    (s) => String(s.id) === String(selectedSupplierId)
+  );
+
+  const categoryRank = (name) => {
+    const idx = MAIN_CATEGORIES_ORDER.indexOf(name);
+    return idx === -1 ? 999 : idx;
+  };
+
+  const sortedCategories = [...categories].sort((a, b) => {
+    const aName = a?.nome || '';
+    const bName = b?.nome || '';
+    const aRank = categoryRank(aName);
+    const bRank = categoryRank(bName);
+    if (aRank !== bRank) return aRank - bRank;
+    return aName.localeCompare(bName, 'it', { sensitivity: 'base' });
+  });
+
+  const applyCategoryPage = async (categoryName) => {
+    const next = categoryName || '';
+    setActiveNav('catalogo');
+    setActiveCategoryPage(next || '');
+    setFilters((prev) => ({ ...prev, categoria: next }));
+    await loadProducts({ categoria: next });
+  };
+
+  const loadSupplierImports = async (supplierId) => {
+    if (!supplierId) {
+      setSupplierImports([]);
+      setSupplierImportsError('');
+      return { ok: true, count: 0, logs: [] };
+    }
+    setLoadingSupplierImports(true);
+    setSupplierImportsError('');
+    try {
+      const response = await apiClient.get(`/suppliers/${supplierId}/imports`);
+      const data = response.data || [];
+      setSupplierImports(data);
+      return {
+        ok: true,
+        count: Array.isArray(data) ? data.length : 0,
+        logs: Array.isArray(data) ? data : [],
+      };
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setSupplierImports([]);
+      setSupplierImportsError(
+        details
+          ? `Impossibile caricare lo storico import (${details})`
+          : 'Impossibile caricare lo storico import'
+      );
+      return { ok: false, count: 0, logs: [] };
+    } finally {
+      setLoadingSupplierImports(false);
+    }
+  };
+
+  const handleDeleteImportLog = async (supplierId, importId) => {
+    if (!supplierId || !importId) return;
+    if (!window.confirm('Vuoi cancellare questa voce dallo storico import?')) {
+      return;
+    }
+    setError('');
+    try {
+      await apiClient.delete(`/suppliers/${supplierId}/imports/${importId}`);
+      await loadSupplierImports(supplierId);
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore nella cancellazione dello storico import (${details})`
+          : 'Errore nella cancellazione dello storico import'
+      );
+    }
+  };
+
+  const loadProducts = async (params = {}) => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await apiClient.get('/products', { params });
+      setProducts(response.data);
+    } catch (e) {
+      setError('Errore nel caricamento dei prodotti');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadCategories = async () => {
+    try {
+      // Popola le macro-categorie standard (se mancanti) e poi usa l'elenco.
+      const response = await apiClient.post('/categories/seed');
+      setCategories(response.data || []);
+    } catch (e) {
+      // fallback: prova comunque a leggere quelle presenti
+      try {
+        const response = await apiClient.get('/categories');
+        setCategories(response.data || []);
+      } catch (ignored) {
+        // ignore for now
+      }
+    }
+  };
+
+  const loadSuppliers = async () => {
+    try {
+      const response = await apiClient.get('/suppliers');
+      setSuppliers(response.data);
+    } catch (e) {
+      // ignore per ora
+    }
+  };
+
+  const loadGlobalIncrease = async () => {
+    try {
+      const response = await apiClient.get('/prices/settings');
+      if (response.data && response.data.aumentoGlobalePercentuale != null) {
+        setGlobalIncrease(response.data.aumentoGlobalePercentuale);
+      }
+    } catch (e) {
+      // ignore for now
+    }
+  };
+
+  useEffect(() => {
+    // default: prima pagina = Computer
+    applyCategoryPage('Computer');
+    loadCategories();
+    loadGlobalIncrease();
+    loadSuppliers();
+  }, []);
+
+  useEffect(() => {
+    if (selectedSupplierId) {
+      loadSupplierImports(selectedSupplierId);
+    } else {
+      setSupplierImports([]);
+      setSupplierImportsError('');
+    }
+  }, [selectedSupplierId]);
+
+  useEffect(() => {
+    // Quando entriamo nella "cartella" del fornitore, ricarichiamo sempre lo storico
+    if (activeNav === 'fornitore-imports' && selectedSupplierId) {
+      loadSupplierImports(selectedSupplierId);
+    }
+  }, [activeNav, selectedSupplierId]);
+
+  const handleFilterChange = (e) => {
+    const { name, value } = e.target;
+    setFilters((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSearch = (e) => {
+    e.preventDefault();
+    const params = {};
+    if (filters.nome) params.nome = filters.nome;
+    if (filters.sku) params.sku = filters.sku;
+    if (filters.categoria) params.categoria = filters.categoria;
+    loadProducts(params);
+  };
+
+  const handleImport = async (endpoint, file, supplierId) => {
+    if (!file) return;
+
+    if (endpoint !== '/import/suppliers' && !supplierId) {
+      setError('Seleziona un fornitore prima di importare.');
+      return;
+    }
+
+    setUploading(true);
+    setError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (supplierId) {
+        formData.append('supplierId', supplierId);
+      }
+      // Non forzare Content-Type: Axios/browser aggiunge automaticamente il boundary corretto
+      await apiClient.post(endpoint, formData);
+      await loadProducts();
+      if (supplierId) {
+        // alcuni backend salvano il log import in async: facciamo qualche retry breve
+        const sleep = (ms) =>
+          new Promise((resolve) => {
+            setTimeout(resolve, ms);
+          });
+
+        const previousCount = supplierImports.length;
+        let result = await loadSupplierImports(supplierId);
+        for (const delay of [800, 1200, 2000, 2500]) {
+          await sleep(delay);
+          result = await loadSupplierImports(supplierId);
+          if (result?.ok && result.count > previousCount) break;
+        }
+
+        if (result?.ok && result.count === 0) {
+          setError(
+            "Import completato, ma lo storico risulta vuoto: il backend non sta registrando i log d'import per questo fornitore."
+          );
+        }
+
+        // Apri automaticamente la preview dell'ultimo import appena registrato
+        if (result?.ok && Array.isArray(result.logs) && result.logs.length > 0) {
+          const importedFileName = file?.name || file?.originalname;
+          const newest =
+            (importedFileName &&
+              result.logs.find((l) => l?.fileName === importedFileName)) ||
+            result.logs[0];
+          if (newest?.id) {
+            try {
+              const fileResponse = await apiClient.get(
+                `/suppliers/${supplierId}/imports/${newest.id}/file`,
+                { responseType: 'blob' }
+              );
+              const text = await fileResponse.data.text();
+              setHistoryPreviewName(newest.fileName || importedFileName || 'import.csv');
+              setHistoryPreviewText(
+                text.length > 3000 ? text.slice(0, 3000) + '\n...\n' : text
+              );
+            } catch (e) {
+              // se il file non è disponibile (vecchi log) non blocchiamo la UI
+            }
+          }
+        }
+      }
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+
+      setError(
+        details
+          ? `Errore durante l'importazione del file (${details})`
+          : "Errore durante l'importazione del file"
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleSaveCsvToFolder = async (file, supplierId) => {
+    if (!file) return;
+    if (!supplierId) {
+      setError('Seleziona un fornitore prima di salvare il CSV.');
+      return;
+    }
+    setUploading(true);
+    setError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('tipo', 'PRODOTTI');
+      await apiClient.post(`/suppliers/${supplierId}/imports`, formData);
+      await loadSupplierImports(supplierId);
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore durante il salvataggio del CSV (${details})`
+          : 'Errore durante il salvataggio del CSV'
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleApplyImportToCatalog = async (supplierId, importId) => {
+    if (!supplierId || !importId) return;
+    setUploading(true);
+    setError('');
+    try {
+      await apiClient.post(`/suppliers/${supplierId}/imports/${importId}/apply-products`);
+      await loadProducts();
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore durante l'import nel catalogo (${details})`
+          : "Errore durante l'import nel catalogo"
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleImportWithPreview = async (endpoint, file, supplierId) => {
+    if (!file) return;
+    if (supplierId) {
+      setSelectedSupplierId(supplierId);
+    }
+    try {
+      const text = await file.text();
+      setCsvPreviewName(file.name || '');
+      // evitiamo preview infinite: mostriamo max ~3000 caratteri
+      setCsvPreviewText(
+        text.length > 3000 ? text.slice(0, 3000) + '\n...\n' : text
+      );
+    } catch (e) {
+      setCsvPreviewName(file.name || '');
+      setCsvPreviewText('');
+    }
+    setPendingImport({ endpoint, file, supplierId });
+  };
+
+  const handleConfirmImport = async () => {
+    if (!pendingImport) return;
+    const { file, supplierId } = pendingImport;
+    await handleSaveCsvToFolder(file, supplierId);
+    setPendingImport(null);
+    setCsvPreviewName('');
+    setCsvPreviewText('');
+  };
+
+  const handleDiscardImport = () => {
+    setPendingImport(null);
+    setCsvPreviewName('');
+    setCsvPreviewText('');
+  };
+
+  const handlePreviewImportLog = async (supplierId, importId, fileName) => {
+    if (!supplierId || !importId) return;
+    setError('');
+    try {
+      const response = await apiClient.get(
+        `/suppliers/${supplierId}/imports/${importId}/file`,
+        { responseType: 'blob' }
+      );
+      const text = await response.data.text();
+      setHistoryPreviewName(fileName || 'import.csv');
+      setHistoryPreviewText(
+        text.length > 3000 ? text.slice(0, 3000) + '\n...\n' : text
+      );
+    } catch (e) {
+      const status = e?.response?.status;
+      setError(
+        status
+          ? `Errore nel caricamento del CSV importato (HTTP ${status})`
+          : 'Errore nel caricamento del CSV importato'
+      );
+      setHistoryPreviewName(fileName || 'import.csv');
+      setHistoryPreviewText('');
+    }
+  };
+
+  const handleDownloadImportLog = async (supplierId, importId, fileName) => {
+    if (!supplierId || !importId) return;
+    setError('');
+    try {
+      const response = await apiClient.get(
+        `/suppliers/${supplierId}/imports/${importId}/file`,
+        { responseType: 'blob' }
+      );
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', fileName || 'import.csv');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      const status = e?.response?.status;
+      setError(
+        status
+          ? `Errore nel download del CSV importato (HTTP ${status})`
+          : 'Errore nel download del CSV importato'
+      );
+    }
+  };
+
+  const handleGlobalIncreaseSave = async () => {
+    if (globalIncrease === '') return;
+    try {
+      await apiClient.put('/prices/settings/global', null, {
+        params: { percent: globalIncrease },
+      });
+      await loadProducts();
+    } catch (e) {
+      setError("Errore nel salvataggio dell'aumento globale");
+    }
+  };
+
+  const handleCategoryIncreaseChange = async (categoryId, value) => {
+    try {
+      await apiClient.put(`/categories/${categoryId}/increase`, null, {
+        params: { percent: value },
+      });
+      await loadCategories();
+      await loadProducts();
+    } catch (e) {
+      setError("Errore nel salvataggio dell'aumento categoria");
+    }
+  };
+
+  const handleExportCsv = async () => {
+    try {
+      const response = await apiClient.get('/products/export/csv', {
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'catalogo.csv');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (e) {
+      setError('Errore durante l\'esportazione CSV');
+    }
+  };
+
+  const handleExportJson = async () => {
+    try {
+      const response = await apiClient.get('/products/export/json');
+      const dataStr =
+        'data:text/json;charset=utf-8,' +
+        encodeURIComponent(JSON.stringify(response.data, null, 2));
+      const link = document.createElement('a');
+      link.href = dataStr;
+      link.setAttribute('download', 'catalogo.json');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (e) {
+      setError('Errore durante l\'esportazione JSON');
+    }
+  };
+
+  const handleProductRowClick = (product) => {
+    setSelectedProduct(product);
+    setProductForm({
+      nome: product.nome || '',
+      descrizione: product.descrizione || '',
+      prezzoBase: product.prezzoBase ?? '',
+      aumentoPercentuale: product.aumentoPercentuale ?? '',
+      categoriaId: product.categoria ? product.categoria.id : '',
+    });
+  };
+
+  const handleProductFormChange = (e) => {
+    const { name, value } = e.target;
+    setProductForm((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
+  };
+
+  const handleProductSave = async (e) => {
+    e.preventDefault();
+    if (!selectedProduct) return;
+    setSavingProduct(true);
+    setError('');
+    try {
+      const payload = {
+        ...selectedProduct,
+        nome: productForm.nome,
+        descrizione: productForm.descrizione,
+        prezzoBase:
+          productForm.prezzoBase === ''
+            ? null
+            : Number(productForm.prezzoBase),
+        aumentoPercentuale:
+          productForm.aumentoPercentuale === ''
+            ? null
+            : Number(productForm.aumentoPercentuale),
+        categoriaId: productForm.categoriaId || null,
+      };
+      await apiClient.put(`/products/${selectedProduct.id}`, payload);
+      // Ricarica mantenendo i filtri correnti (inclusa la categoria/pagina attiva)
+      const params = {};
+      if (filters.nome) params.nome = filters.nome;
+      if (filters.sku) params.sku = filters.sku;
+      const currentCategoryFilter = filters.categoria || activeCategoryPage;
+      if (currentCategoryFilter) {
+        params.categoria = currentCategoryFilter;
+      }
+      await loadProducts(params);
+    } catch (e) {
+      setError('Errore nel salvataggio del prodotto');
+    } finally {
+      setSavingProduct(false);
+    }
+  };
+
+  const handleProductDelete = async (productId) => {
+    if (!productId) return;
+    if (!window.confirm('Vuoi cancellare questo prodotto dal catalogo?')) {
+      return;
+    }
+    setSavingProduct(true);
+    setError('');
+    try {
+      await apiClient.delete(`/products/${productId}`);
+      setSelectedProduct(null);
+      await loadProducts();
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore nella cancellazione del prodotto (${details})`
+          : 'Errore nella cancellazione del prodotto'
+      );
+    } finally {
+      setSavingProduct(false);
+    }
+  };
+
+  const handleCatalogReset = async () => {
+    if (
+      !window.confirm(
+        'ATTENZIONE: verranno cancellati tutti i prodotti (le categorie restano). Vuoi continuare?'
+      )
+    ) {
+      return;
+    }
+    setSavingProduct(true);
+    setError('');
+    try {
+      await apiClient.delete('/products/reset');
+      setSelectedProduct(null);
+      setSupplierImports([]);
+      await loadProducts();
+      await loadCategories();
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore nel reset del catalogo (${details})`
+          : 'Errore nel reset del catalogo'
+      );
+    } finally {
+      setSavingProduct(false);
+    }
+  };
+
+  const handleNewSupplierSave = async (e) => {
+    e.preventDefault();
+    if (!newSupplierName.trim()) {
+      return;
+    }
+    setSavingSupplier(true);
+    setError('');
+    try {
+      const payload = {
+        nome: newSupplierName.trim(),
+        codice: newSupplierCode.trim() || null,
+      };
+      await apiClient.post('/suppliers', payload);
+      setNewSupplierName('');
+      setNewSupplierCode('');
+      await loadSuppliers();
+    } catch (e) {
+      const backendMessage =
+        typeof e?.response?.data === 'string'
+          ? e.response.data
+          : null;
+      setError(
+        backendMessage || 'Errore nella creazione del fornitore'
+      );
+    } finally {
+      setSavingSupplier(false);
+    }
+  };
+
+  const handleSupplierDelete = async (supplierId) => {
+    if (!window.confirm('Sei sicuro di voler cancellare questo fornitore?')) {
+      return;
+    }
+    setSavingSupplier(true);
+    setError('');
+    try {
+      await apiClient.delete(`/suppliers/${supplierId}`);
+      await loadSuppliers();
+    } catch (e) {
+      setError('Errore nella cancellazione del fornitore');
+    } finally {
+      setSavingSupplier(false);
+    }
+  };
+
+  const handleSupplierEdit = async (supplier) => {
+    const newName = window.prompt('Nome fornitore', supplier.nome || '');
+    if (!newName || !newName.trim()) {
+      return;
+    }
+    const newCode = window.prompt(
+      'Codice fornitore (opzionale)',
+      supplier.codice || ''
+    );
+    setSavingSupplier(true);
+    setError('');
+    try {
+      const payload = {
+        ...supplier,
+        nome: newName.trim(),
+        codice: newCode.trim() || null,
+      };
+      await apiClient.put(`/suppliers/${supplier.id}`, payload);
+      await loadSuppliers();
+    } catch (e) {
+      const backendMessage =
+        typeof e?.response?.data === 'string'
+          ? e.response.data
+          : null;
+      setError(
+        backendMessage || 'Errore nella modifica del fornitore'
+      );
+    } finally {
+      setSavingSupplier(false);
+    }
+  };
+
+  const handleSupplierCsvClick = async (supplierId) => {
+    setSupplierCsvMessage('');
+    setError('');
+    try {
+      const response = await apiClient.get(
+        `/products/export/csv/by-supplier/${supplierId}`,
+        { responseType: 'blob' }
+      );
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute(
+        'download',
+        `catalogo_fornitore_${supplierId}.csv`
+      );
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (e) {
+      if (e.response && e.response.status === 404) {
+        setSupplierCsvMessage('CSV non disponibile per questo fornitore');
+      } else {
+        setError("Errore nel download del CSV del fornitore");
+      }
+    }
+  };
+
+  const handleNavClick = (sectionId) => {
+    setActiveNav(sectionId);
+  };
+
   return (
     <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
+      <header className="app-header">
+        <div className="app-header-inner">
+          <div className="logo-block">
+            <img
+              src={process.env.PUBLIC_URL + '/logo.png'}
+              alt="Hydra Solutions"
+              className="app-logo"
+            />
+          </div>
+          <div>
+            <h1>Catalogo virtuale</h1>
+            <p>Gestione interna catalogo, prezzi e documenti</p>
+          </div>
+        </div>
       </header>
+
+      <main className="app-main">
+        {uploading && (
+          <div className="alert alert-info">
+            Import in corso, attendere il completamento...
+          </div>
+        )}
+        {error && <div className="alert alert-error">{error}</div>}
+
+        <nav className="app-nav">
+          <button
+            type="button"
+            className={activeNav === 'catalogo' ? 'app-nav-active' : ''}
+            onClick={() => handleNavClick('catalogo')}
+          >
+            Catalogo virtuale
+          </button>
+          <button
+            type="button"
+            className={
+              activeNav === 'fornitori' || activeNav === 'fornitore-imports'
+                ? 'app-nav-active'
+                : ''
+            }
+            onClick={() => handleNavClick('fornitori')}
+          >
+            Fornitori
+          </button>
+          <button
+            type="button"
+            className={activeNav === 'aumenti' ? 'app-nav-active' : ''}
+            onClick={() => handleNavClick('aumenti')}
+          >
+            Aumenti di prezzo
+          </button>
+        </nav>
+
+        {activeNav === 'catalogo' && (
+          <>
+            <section className="card">
+              <h2>Catalogo virtuale</h2>
+
+              <div className="category-pager">
+                <div className="category-pager-title">
+                  Pagine per categoria
+                </div>
+                <div className="category-pager-buttons">
+                  {MAIN_CATEGORIES_ORDER.map((cat, idx) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      className={
+                        String(activeCategoryPage) === String(cat)
+                          ? 'category-page-btn category-page-btn-active'
+                          : 'category-page-btn'
+                      }
+                      onClick={() => applyCategoryPage(cat)}
+                      disabled={uploading}
+                      title={cat}
+                    >
+                      {idx + 1}
+                    </button>
+                  ))}
+                </div>
+                <div className="category-pager-current">
+                  Categoria: <strong>{activeCategoryPage || '-'}</strong>
+                </div>
+                <div className="category-legend" aria-label="Legenda pagine categorie">
+                  {MAIN_CATEGORIES_ORDER.map((cat, idx) => (
+                    <div key={cat} className="category-legend-item">
+                      <span className="category-legend-num">{idx + 1}</span>
+                      <span className="category-legend-name">{cat}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <h3>Filtri prodotti</h3>
+              <form className="filters" onSubmit={handleSearch}>
+                <input
+                  type="text"
+                  name="nome"
+                  placeholder="Nome prodotto"
+                  value={filters.nome}
+                  onChange={handleFilterChange}
+                />
+                <input
+                  type="text"
+                  name="sku"
+                  placeholder="SKU"
+                  value={filters.sku}
+                  onChange={handleFilterChange}
+                />
+                <input
+                  type="text"
+                  name="categoria"
+                  placeholder="Categoria"
+                  value={filters.categoria}
+                  onChange={handleFilterChange}
+                />
+                <button type="submit" disabled={loading}>
+                  {loading ? 'Caricamento...' : 'Cerca'}
+                </button>
+                {filters.categoria && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      const nextFilters = { ...filters, categoria: '' };
+                      setFilters(nextFilters);
+                      setActiveCategoryPage('');
+                      loadProducts({ nome: nextFilters.nome, sku: nextFilters.sku, categoria: '' });
+                    }}
+                    disabled={loading || uploading}
+                  >
+                    Mostra tutte
+                  </button>
+                )}
+              </form>
+
+              <h3>Prodotti</h3>
+              <div className="products-layout">
+                <div className="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>SKU</th>
+                        <th>Categoria</th>
+                        <th>Nome</th>
+                        <th>Aumento categoria (%)</th>
+                        <th>Aumento specifico prodotto (%)</th>
+                        <th>Prezzo base</th>
+                        <th>Prezzo finale</th>
+                        <th>Documenti</th>
+                        <th>Azioni</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {products.length === 0 && (
+                        <tr>
+                          <td colSpan="9">Nessun prodotto trovato</td>
+                        </tr>
+                      )}
+                      {products.map((p) => (
+                        <tr
+                          key={p.id}
+                          className={
+                            selectedProduct && selectedProduct.id === p.id
+                              ? 'row-selected'
+                              : ''
+                          }
+                          onClick={() => handleProductRowClick(p)}
+                        >
+                          <td>{p.sku}</td>
+                          <td>{p.categoria ? p.categoria.nome : ''}</td>
+                          <td>{p.nome}</td>
+                          <td>
+                            {p.categoria && p.categoria.aumentoPercentuale != null
+                              ? p.categoria.aumentoPercentuale
+                              : ''}
+                          </td>
+                          <td>
+                            {p.aumentoPercentuale != null
+                              ? p.aumentoPercentuale
+                              : ''}
+                          </td>
+                          <td>{p.prezzoBase}</td>
+                          <td>{p.prezzoFinale}</td>
+                          <td>
+                            {p.documenti && p.documenti.length > 0 ? (
+                              <span>{p.documenti.length} documenti</span>
+                            ) : (
+                              <span>Nessuno</span>
+                            )}
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="icon-button icon-button-danger"
+                              title="Elimina prodotto"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleProductDelete(p.id);
+                              }}
+                            >
+                              🗑️
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="product-detail">
+                  <h3>Dettaglio / modifica prodotto</h3>
+                  {!selectedProduct && (
+                    <p className="muted">
+                      Seleziona una riga dalla tabella per modificare il
+                      prodotto.
+                    </p>
+                  )}
+                  {selectedProduct && (
+                    <>
+                      <p className="muted">
+                        SKU: <strong>{selectedProduct.sku}</strong>
+                      </p>
+                      <form className="product-form" onSubmit={handleProductSave}>
+                        <label>
+                          Nome
+                          <input
+                            type="text"
+                            name="nome"
+                            value={productForm.nome}
+                            onChange={handleProductFormChange}
+                          />
+                        </label>
+                        <label>
+                          Descrizione
+                          <textarea
+                            name="descrizione"
+                            rows="3"
+                            value={productForm.descrizione}
+                            onChange={handleProductFormChange}
+                          />
+                        </label>
+                        <label>
+                          Prezzo base
+                          <input
+                            type="number"
+                            step="0.01"
+                            name="prezzoBase"
+                            value={productForm.prezzoBase}
+                            onChange={handleProductFormChange}
+                          />
+                        </label>
+                        <label>
+                          Aumento specifico prodotto (%)
+                          <input
+                            type="number"
+                            step="0.01"
+                            name="aumentoPercentuale"
+                            value={productForm.aumentoPercentuale}
+                            onChange={handleProductFormChange}
+                          />
+                        </label>
+                        <label>
+                          Categoria
+                          <select
+                            name="categoriaId"
+                            value={productForm.categoriaId}
+                            onChange={handleProductFormChange}
+                          >
+                            <option value="">Nessuna</option>
+                            {sortedCategories.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.nome}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <div className="product-form-actions">
+                          <button type="submit" disabled={savingProduct}>
+                            {savingProduct
+                              ? 'Salvataggio...'
+                              : 'Salva modifiche'}
+                          </button>
+                        </div>
+                      </form>
+
+                      <div className="product-documents">
+                        <h4>Documenti associati</h4>
+                        {selectedProduct.documenti &&
+                        selectedProduct.documenti.length > 0 ? (
+                          <ul>
+                            {selectedProduct.documenti.map((d) => (
+                              <li key={d.id || `${d.tipo}-${d.url}`}>
+                                <span>{d.tipoDocumento || d.tipo}: </span>
+                                <a
+                                  href={d.url || d.urlDocumento}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {d.url || d.urlDocumento}
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="muted">
+                            Nessun documento associato a questo prodotto.
+                          </p>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+            </section>
+
+            <section className="card">
+              <h2>Esportazione catalogo</h2>
+              <div className="export-buttons">
+                <button type="button" onClick={handleExportCsv}>
+                  Esporta CSV
+                </button>
+                <button type="button" onClick={handleExportJson}>
+                  Esporta JSON
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  onClick={handleCatalogReset}
+                >
+                  Reset catalogo prodotti
+                </button>
+              </div>
+            </section>
+          </>
+        )}
+
+        {activeNav === 'fornitori' && (
+          <>
+            <section className="card">
+              <h2>Fornitori</h2>
+              <div className="suppliers-layout">
+                <div>
+                  <h3>Crea nuovo fornitore</h3>
+                  <form
+                    className="supplier-form"
+                    onSubmit={handleNewSupplierSave}
+                  >
+                    <label>
+                      Nome fornitore
+                      <input
+                        type="text"
+                        value={newSupplierName}
+                        onChange={(e) => setNewSupplierName(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Codice fornitore (opzionale)
+                      <input
+                        type="text"
+                        value={newSupplierCode}
+                        onChange={(e) => setNewSupplierCode(e.target.value)}
+                      />
+                    </label>
+                    <button type="submit" disabled={savingSupplier}>
+                      {savingSupplier ? 'Creazione...' : 'Crea fornitore'}
+                    </button>
+                  </form>
+                </div>
+                <div className="table-wrapper">
+                  <h3>Elenco fornitori</h3>
+                  {supplierCsvMessage && (
+                    <p className="muted">{supplierCsvMessage}</p>
+                  )}
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Codice</th>
+                        <th>Nome</th>
+                        <th>Import prodotti (CSV)</th>
+                        <th>Scarica CSV</th>
+                        <th>Azioni</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {suppliers.length === 0 && (
+                        <tr>
+                          <td colSpan="5">Nessun fornitore presente</td>
+                        </tr>
+                      )}
+                      {suppliers.map((s) => (
+                        <tr
+                          key={s.id}
+                          className={
+                            selectedSupplierId &&
+                            String(selectedSupplierId) === String(s.id)
+                              ? 'row-selected'
+                              : ''
+                          }
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => {
+                            setSelectedSupplierId(s.id);
+                            setActiveNav('fornitore-imports');
+                          }}
+                        >
+                          <td>{s.codice}</td>
+                          <td>
+                            <strong>{s.nome}</strong>
+                          </td>
+                          <td>
+                            <div
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '0.25rem',
+                              }}
+                            >
+                              <input
+                                type="file"
+                                accept=".csv"
+                                onChange={(e) => {
+                                  // Se scegli un CSV da una riga, selezioniamo quel fornitore
+                                  // così preview e storico sono coerenti con il file scelto.
+                                  setSelectedSupplierId(s.id);
+                                  handleImportWithPreview(
+                                    '/suppliers/' + s.id + '/imports',
+                                    e.target.files[0],
+                                    s.id
+                                  );
+                                }}
+                                disabled={uploading}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                              <button
+                                type="button"
+                                className="icon-button icon-button-secondary"
+                                disabled={
+                                  uploading ||
+                                  !pendingImport ||
+                                  pendingImport.endpoint !==
+                                    '/suppliers/' + s.id + '/imports' ||
+                                  String(pendingImport.supplierId) !==
+                                    String(s.id)
+                                }
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleConfirmImport();
+                                }}
+                              >
+                                Salva in cartella
+                              </button>
+                            </div>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="icon-button icon-button-secondary"
+                              title="Scarica CSV fornitore"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSupplierCsvClick(s.id);
+                              }}
+                            >
+                              CSV
+                            </button>
+                          </td>
+                          <td>
+                            <div className="supplier-actions">
+                              <button
+                                type="button"
+                                className="icon-button icon-button-secondary"
+                                title="Modifica fornitore"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSupplierEdit(s);
+                                }}
+                              >
+                                ✏️
+                              </button>
+                              <button
+                                type="button"
+                                className="icon-button icon-button-danger"
+                                title="Elimina fornitore"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSupplierDelete(s.id);
+                                }}
+                              >
+                                🗑️
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          </>
+        )}
+
+        {activeNav === 'fornitore-imports' && (
+          <section className="card">
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.75rem',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div>
+                <h2 style={{ margin: 0 }}>
+                  {selectedSupplier?.nome
+                    ? `Fornitore: ${selectedSupplier.nome}`
+                    : `Fornitore: ${selectedSupplierId || '-'}`}
+                </h2>
+                <p className="muted" style={{ marginTop: '0.35rem' }}>
+                  Cartella import CSV{' '}
+                  {!loadingSupplierImports && !supplierImportsError && (
+                    <span className="badge" style={{ marginLeft: '0.35rem' }}>
+                      {supplierImports.length}
+                    </span>
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="icon-button icon-button-secondary"
+                onClick={() => {
+                  setHistoryPreviewName('');
+                  setHistoryPreviewText('');
+                  setCsvPreviewName('');
+                  setCsvPreviewText('');
+                  setPendingImport(null);
+                  setActiveNav('fornitori');
+                }}
+              >
+                ← Indietro
+              </button>
+            </div>
+
+            {!selectedSupplierId ? (
+              <p className="muted" style={{ marginTop: '1rem' }}>
+                Seleziona un fornitore dalla lista.
+              </p>
+            ) : (
+              <>
+                <div className="card" style={{ marginTop: '1rem', padding: '1rem' }}>
+                  <h3 style={{ marginTop: 0 }}>Carica un nuovo CSV</h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    <input
+                      type="file"
+                      accept=".csv"
+                      disabled={uploading}
+                      onChange={(e) =>
+                        handleImportWithPreview(
+                          '/suppliers/' + selectedSupplierId + '/imports',
+                          e.target.files[0],
+                          selectedSupplierId
+                        )
+                      }
+                    />
+                    <button
+                      type="button"
+                      disabled={
+                        uploading ||
+                        !pendingImport ||
+                        pendingImport.endpoint !==
+                          '/suppliers/' + selectedSupplierId + '/imports' ||
+                        String(pendingImport.supplierId) !== String(selectedSupplierId)
+                      }
+                      onClick={handleConfirmImport}
+                    >
+                      Salva in cartella
+                    </button>
+                  </div>
+                </div>
+
+                {(csvPreviewName || csvPreviewText) && (
+                  <div
+                    className="card"
+                    style={{ marginTop: '1rem', padding: '1rem' }}
+                  >
+                    <h4>Preview CSV selezionato</h4>
+                    {csvPreviewName && (
+                      <p className="muted">
+                        File: <strong>{csvPreviewName}</strong>
+                      </p>
+                    )}
+                    {pendingImport && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: '0.5rem',
+                          flexWrap: 'wrap',
+                          marginBottom: '0.75rem',
+                        }}
+                      >
+                        <button
+                          type="button"
+                          disabled={uploading}
+                          onClick={handleConfirmImport}
+                        >
+                          Salva in cartella
+                        </button>
+                        <button
+                          type="button"
+                          className="danger-button"
+                          disabled={uploading}
+                          onClick={handleDiscardImport}
+                        >
+                          Scarta
+                        </button>
+                      </div>
+                    )}
+                    {csvPreviewText ? (
+                      <pre
+                        style={{
+                          whiteSpace: 'pre-wrap',
+                          maxHeight: '240px',
+                          overflow: 'auto',
+                          margin: 0,
+                        }}
+                      >
+                        {csvPreviewText}
+                      </pre>
+                    ) : (
+                      <p className="muted">Nessuna preview disponibile.</p>
+                    )}
+                  </div>
+                )}
+
+                {(historyPreviewName || historyPreviewText) && (
+                  <div
+                    className="card"
+                    style={{ marginTop: '1rem', padding: '1rem' }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '0.75rem',
+                        flexWrap: 'wrap',
+                        marginBottom: '0.5rem',
+                      }}
+                    >
+                      <h4 style={{ margin: 0 }}>Contenuto CSV</h4>
+                      <button
+                        type="button"
+                        className="icon-button icon-button-secondary"
+                        onClick={() => {
+                          setHistoryPreviewName('');
+                          setHistoryPreviewText('');
+                        }}
+                      >
+                        Chiudi
+                      </button>
+                    </div>
+                    {historyPreviewName && (
+                      <p className="muted">
+                        File: <strong>{historyPreviewName}</strong>
+                      </p>
+                    )}
+                    {historyPreviewText ? (
+                      <pre
+                        style={{
+                          whiteSpace: 'pre-wrap',
+                          maxHeight: '240px',
+                          overflow: 'auto',
+                          margin: 0,
+                        }}
+                      >
+                        {historyPreviewText}
+                      </pre>
+                    ) : (
+                      <p className="muted">Nessuna preview disponibile.</p>
+                    )}
+                  </div>
+                )}
+
+                <div style={{ marginTop: '1rem' }}>
+                  <h3 style={{ marginTop: 0 }}>Elenco CSV importati</h3>
+                  {loadingSupplierImports ? (
+                    <p className="muted">Caricamento...</p>
+                  ) : supplierImportsError ? (
+                    <p className="error">{supplierImportsError}</p>
+                  ) : supplierImports.length === 0 ? (
+                    <p className="muted">Cartella vuota.</p>
+                  ) : (
+                    <div className="table-wrapper">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>File</th>
+                            <th>Tipo</th>
+                            <th>Data</th>
+                            <th>Azioni</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {supplierImports.map((log) => (
+                            <tr key={log.id}>
+                              <td>
+                                <strong>{log.fileName}</strong>
+                              </td>
+                              <td>{log.tipo}</td>
+                              <td>{new Date(log.importedAt).toLocaleString()}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="icon-button icon-button-secondary"
+                                  title="Importa nel catalogo"
+                                  disabled={uploading || String(log.tipo).toUpperCase() !== 'PRODOTTI'}
+                                  onClick={() =>
+                                    handleApplyImportToCatalog(selectedSupplierId, log.id)
+                                  }
+                                >
+                                  ⇢
+                                </button>
+                                <button
+                                  type="button"
+                                  className="icon-button icon-button-secondary"
+                                  title="Visualizza"
+                                  onClick={() =>
+                                    handlePreviewImportLog(
+                                      selectedSupplierId,
+                                      log.id,
+                                      log.fileName
+                                    )
+                                  }
+                                >
+                                  👁️
+                                </button>
+                                <button
+                                  type="button"
+                                  className="icon-button icon-button-secondary"
+                                  style={{ marginLeft: '0.35rem' }}
+                                  title="Scarica"
+                                  onClick={() =>
+                                    handleDownloadImportLog(
+                                      selectedSupplierId,
+                                      log.id,
+                                      log.fileName
+                                    )
+                                  }
+                                >
+                                  ⬇️
+                                </button>
+                                <button
+                                  type="button"
+                                  className="icon-button icon-button-danger"
+                                  style={{ marginLeft: '0.35rem' }}
+                                  title="Elimina dallo storico"
+                                  onClick={() =>
+                                    handleDeleteImportLog(selectedSupplierId, log.id)
+                                  }
+                                >
+                                  🗑️
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
+        {activeNav === 'aumenti' && (
+          <section className="card">
+            <h2>Aumenti di prezzo</h2>
+            <div className="category-layout">
+              <div>
+                <h3>Impostazioni aumenti</h3>
+                <div className="prices-grid">
+                  <div>
+                    <h4>Aumento globale (%)</h4>
+                    <div className="inline-form">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={globalIncrease}
+                        onChange={(e) => setGlobalIncrease(e.target.value)}
+                      />
+                      <button type="button" onClick={handleGlobalIncreaseSave}>
+                        Salva
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <h4>Aumenti per categoria (%)</h4>
+                    <div className="table-wrapper">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Categoria</th>
+                            <th>Aumento (%)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {categories.length === 0 && (
+                            <tr>
+                              <td colSpan="2">Nessuna categoria</td>
+                            </tr>
+                          )}
+                          {sortedCategories.map((c) => (
+                            <tr key={c.id}>
+                              <td>
+                                <span
+                                  className={
+                                    c.parent ? 'category-name-sub' : 'category-name-main'
+                                  }
+                                >
+                                  {c.nome}
+                                </span>
+                              </td>
+                              <td>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  defaultValue={c.aumentoPercentuale || ''}
+                                  onBlur={(e) =>
+                                    handleCategoryIncreaseChange(
+                                      c.id,
+                                      e.target.value
+                                    )
+                                  }
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+      </main>
     </div>
   );
 }
