@@ -27,6 +27,7 @@ function App() {
   const [productForm, setProductForm] = useState({
     nome: '',
     descrizione: '',
+    disponibilita: '',
     prezzoBase: '',
     aumentoPercentuale: '',
     categoriaId: '',
@@ -37,6 +38,9 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [savingProduct, setSavingProduct] = useState(false);
   const [savingCategory, setSavingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [deletingCategoryId, setDeletingCategoryId] = useState(null);
   const [savingSupplier, setSavingSupplier] = useState(false);
   const [error, setError] = useState('');
   const [supplierCsvMessage, setSupplierCsvMessage] = useState('');
@@ -49,6 +53,8 @@ function App() {
   const [historyPreviewName, setHistoryPreviewName] = useState('');
   const [historyPreviewText, setHistoryPreviewText] = useState('');
   const [activeCategoryPage, setActiveCategoryPage] = useState('Computer');
+  const [canRollbackLastImport, setCanRollbackLastImport] = useState(false);
+  const [syncingIcecat, setSyncingIcecat] = useState(false);
   const savingProductRef = useRef(false);
 
   const selectedSupplier = suppliers.find(
@@ -58,6 +64,12 @@ function App() {
   const categoryRank = (name) => {
     const idx = MAIN_CATEGORIES_ORDER.indexOf(name);
     return idx === -1 ? 999 : idx;
+  };
+
+  const formatPrezzo = (v) => {
+    if (v == null || v === '') return '—';
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isNaN(n) ? String(v) : n.toLocaleString('it-IT', { minimumFractionDigits: 2 });
   };
 
   /** Rincaro percentuale effettivamente applicato (stessa priorità del backend). */
@@ -79,6 +91,14 @@ function App() {
     if (aRank !== bRank) return aRank - bRank;
     return aName.localeCompare(bName, 'it', { sensitivity: 'base' });
   });
+
+  /** Lista per il pager: le 10 standard + eventuali categorie aggiunte (11, 12, ...) */
+  const categoryPageList = [
+    ...MAIN_CATEGORIES_ORDER,
+    ...categories
+      .map((c) => c.nome)
+      .filter((nome) => !MAIN_CATEGORIES_ORDER.includes(nome)),
+  ];
 
   const applyCategoryPage = async (categoryName) => {
     const next = categoryName || '';
@@ -168,6 +188,13 @@ function App() {
     try {
       const response = await apiClient.get('/products', { params });
       setProducts(response.data);
+      try {
+        const canRollbackRes = await apiClient.get('/products/can-rollback-last-import');
+        const val = canRollbackRes?.data;
+        setCanRollbackLastImport(val === true || val === 'true');
+      } catch (_) {
+        setCanRollbackLastImport(false);
+      }
     } catch (e) {
       setError('Errore nel caricamento dei prodotti');
     } finally {
@@ -177,17 +204,15 @@ function App() {
 
   const loadCategories = async () => {
     try {
-      // Popola le macro-categorie standard (se mancanti) e poi usa l'elenco.
-      const response = await apiClient.post('/categories/seed');
-      setCategories(response.data || []);
+      await apiClient.post('/categories/seed');
     } catch (e) {
-      // fallback: prova comunque a leggere quelle presenti
-      try {
-        const response = await apiClient.get('/categories');
-        setCategories(response.data || []);
-      } catch (ignored) {
-        // ignore for now
-      }
+      // seed può fallire se le categorie esistono già, non è critico
+    }
+    try {
+      const response = await apiClient.get('/categories');
+      setCategories(response.data || []);
+    } catch (ignored) {
+      // ignore for now
     }
   };
 
@@ -234,6 +259,22 @@ function App() {
       loadSupplierImports(selectedSupplierId);
     }
   }, [activeNav, selectedSupplierId]);
+
+  const refreshCanRollback = async () => {
+    try {
+      const res = await apiClient.get('/products/can-rollback-last-import');
+      const val = res?.data;
+      setCanRollbackLastImport(val === true || String(val).toLowerCase() === 'true');
+    } catch (_) {
+      setCanRollbackLastImport(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeNav === 'catalogo') {
+      refreshCanRollback();
+    }
+  }, [activeNav]);
 
   const handleFilterChange = (e) => {
     const { name, value } = e.target;
@@ -317,7 +358,7 @@ function App() {
       const status = e?.response?.status;
       if (status === 413) {
         setError(
-          'File troppo grande (HTTP 413). Il server accetta file fino a 50 MB. Riduci le dimensioni del file o dividilo in parti più piccole.'
+          'File troppo grande (HTTP 413). Il server accetta file fino a 100 MB. Riduci le dimensioni del file o dividilo in parti più piccole.'
         );
       } else {
         const data = e?.response?.data;
@@ -357,12 +398,14 @@ function App() {
       formData.append('file', file);
       formData.append('tipo', 'PRODOTTI');
       await apiClient.post(`/suppliers/${supplierId}/imports`, formData);
+      await loadProducts();
       await loadSupplierImports(supplierId);
+      await refreshCanRollback();
     } catch (e) {
       const status = e?.response?.status;
       if (status === 413) {
         setError(
-          'File troppo grande (HTTP 413). Il server accetta file fino a 50 MB. Riduci le dimensioni del file o dividilo in parti più piccole.'
+          'File troppo grande (HTTP 413). Il server accetta file fino a 100 MB. Riduci le dimensioni del file o dividilo in parti più piccole.'
         );
       } else {
         const data = e?.response?.data;
@@ -395,6 +438,7 @@ function App() {
     try {
       await apiClient.post(`/suppliers/${supplierId}/imports/${importId}/apply-products`);
       await loadProducts();
+      await loadSupplierImports(supplierId);
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data;
@@ -416,6 +460,80 @@ function App() {
       );
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleRollbackImport = async (supplierId, importId) => {
+    if (!supplierId || !importId) return;
+    if (!window.confirm('Annullare le modifiche di questo import? I prodotti verranno ripristinati allo stato precedente.')) {
+      return;
+    }
+    setUploading(true);
+    setError('');
+    try {
+      await apiClient.post(`/suppliers/${supplierId}/imports/${importId}/rollback`);
+      await loadProducts();
+      await loadSupplierImports(supplierId);
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore durante il rollback (${details})`
+          : 'Errore durante il rollback'
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleRollbackLastImport = async () => {
+    if (!window.confirm('Annullare l\'ultimo import applicato? I prodotti verranno ripristinati allo stato precedente.')) {
+      return;
+    }
+    setSavingProduct(true);
+    setError('');
+    try {
+      const response = await apiClient.post('/products/rollback-last-import');
+      if (response.status === 200) {
+        setCanRollbackLastImport(false);
+        await loadProducts();
+        if (selectedSupplierId) {
+          await loadSupplierImports(selectedSupplierId);
+        }
+      }
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore durante il rollback (${details})`
+          : 'Errore durante il rollback'
+      );
+    } finally {
+      setSavingProduct(false);
     }
   };
 
@@ -519,6 +637,58 @@ function App() {
     }
   };
 
+  const handleAddCategory = async (e) => {
+    e?.preventDefault?.();
+    const nome = (newCategoryName || '').trim();
+    if (!nome) return;
+    setAddingCategory(true);
+    setError('');
+    try {
+      await apiClient.post('/categories', { nome });
+      setNewCategoryName('');
+      await loadCategories();
+    } catch (e) {
+      const data = e?.response?.data;
+      const msg =
+        typeof data === 'string'
+          ? data
+          : data?.message || data?.error || 'Errore nella creazione della categoria';
+      setError(msg);
+    } finally {
+      setAddingCategory(false);
+    }
+  };
+
+  const handleDeleteCategory = async (categoryId, categoryName) => {
+    if (
+      !window.confirm(
+        `Eliminare la categoria "${categoryName}"? Tutti i prodotti in questa categoria verranno cancellati.`
+      )
+    ) {
+      return;
+    }
+    setDeletingCategoryId(categoryId);
+    setError('');
+    try {
+      await apiClient.delete(`/categories/${categoryId}`);
+      if (String(activeCategoryPage) === String(categoryName)) {
+        setActiveCategoryPage('');
+        setFilters((prev) => ({ ...prev, categoria: '' }));
+        await loadProducts({});
+      }
+      await loadCategories();
+    } catch (e) {
+      const data = e?.response?.data;
+      const msg =
+        typeof data === 'string'
+          ? data
+          : data?.message || data?.error || 'Errore nell\'eliminazione della categoria';
+      setError(msg);
+    } finally {
+      setDeletingCategoryId(null);
+    }
+  };
+
   const handleCategoryIncreaseChange = async (categoryId, value) => {
     try {
       const params = value === '' || value == null ? {} : { percent: Number(value) };
@@ -582,6 +752,7 @@ function App() {
     setProductForm({
       nome: product.nome || '',
       descrizione: product.descrizione || '',
+      disponibilita: product.disponibilita ?? '',
       prezzoBase: pb != null && pb !== '' ? String(pb) : '',
       aumentoPercentuale: product.aumentoPercentuale ?? '',
       categoriaId: product.categoria ? product.categoria.id : '',
@@ -618,6 +789,7 @@ function App() {
       const payload = {
         nome: form.nome?.value ?? productForm.nome,
         descrizione: form.descrizione?.value ?? productForm.descrizione,
+        disponibilita: (form.disponibilita?.value ?? productForm.disponibilita) || null,
         prezzoBase: prezzoBaseVal,
         aumentoPercentuale: (() => {
           const v = form.aumentoPercentuale?.value ?? productForm.aumentoPercentuale;
@@ -696,6 +868,47 @@ function App() {
       );
     } finally {
       setSavingProduct(false);
+    }
+  };
+
+  const handleSyncIcecatImages = async (productId) => {
+    if (!productId) return;
+    setSyncingIcecat(true);
+    setError('');
+    try {
+      const res = await apiClient.post(`/products/${productId}/sync-icecat-images`);
+      const added = res?.data?.imagesAdded ?? 0;
+      await loadProducts();
+      if (selectedProduct?.id === productId) {
+        const allRes = await apiClient.get('/products');
+        const p = allRes.data?.find((x) => x.id === productId);
+        if (p) setSelectedProduct(p);
+      }
+      setError(added > 0 ? '' : 'Nessuna immagine trovata su Icecat per questo prodotto (EAN/SKU).');
+    } catch (e) {
+      setError('Errore durante il recupero immagini da Icecat.');
+    } finally {
+      setSyncingIcecat(false);
+    }
+  };
+
+  const handleSyncAllIcecatImages = async () => {
+    setSyncingIcecat(true);
+    setError('');
+    try {
+      const res = await apiClient.post('/products/sync-all-icecat-images');
+      const added = res?.data?.imagesAdded ?? 0;
+      await loadProducts();
+      if (selectedProduct) {
+        const allRes = await apiClient.get('/products');
+        const p = allRes.data?.find((x) => x.id === selectedProduct.id);
+        if (p) setSelectedProduct(p);
+      }
+      setError(added > 0 ? '' : 'Nessuna immagine trovata su Icecat per i prodotti con EAN valido.');
+    } catch (e) {
+      setError('Errore durante il recupero immagini da Icecat.');
+    } finally {
+      setSyncingIcecat(false);
     }
   };
 
@@ -907,11 +1120,14 @@ function App() {
               <h2>Catalogo virtuale</h2>
 
               <div className="category-pager">
-                <div className="category-pager-title">
-                  Pagine per categoria
+                <div className="category-pager-header">
+                  <span className="category-pager-title">Pagine per categoria</span>
+                  <span className="category-pager-current">
+                    Categoria: <strong>{activeCategoryPage || 'Tutte'}</strong>
+                  </span>
                 </div>
                 <div className="category-pager-buttons">
-                  {MAIN_CATEGORIES_ORDER.map((cat, idx) => (
+                  {categoryPageList.map((cat, idx) => (
                     <button
                       key={cat}
                       type="button"
@@ -927,17 +1143,51 @@ function App() {
                       {idx + 1}
                     </button>
                   ))}
-                </div>
-                <div className="category-pager-current">
-                  Categoria: <strong>{activeCategoryPage || '-'}</strong>
+                  <form
+                    className="category-add-form"
+                    onSubmit={handleAddCategory}
+                  >
+                    <input
+                      type="text"
+                      placeholder="Nuova categoria..."
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      disabled={addingCategory || uploading}
+                      className="category-add-input"
+                    />
+                    <button
+                      type="submit"
+                      className="category-add-btn"
+                      disabled={!newCategoryName.trim() || addingCategory || uploading}
+                      title="Aggiungi categoria"
+                    >
+                      {addingCategory ? '…' : '+'}
+                    </button>
+                  </form>
                 </div>
                 <div className="category-legend" aria-label="Legenda pagine categorie">
-                  {MAIN_CATEGORIES_ORDER.map((cat, idx) => (
-                    <div key={cat} className="category-legend-item">
-                      <span className="category-legend-num">{idx + 1}</span>
-                      <span className="category-legend-name">{cat}</span>
-                    </div>
-                  ))}
+                  {categoryPageList.map((cat, idx) => {
+                    const catObj = categories.find((c) => c.nome === cat);
+                    const catId = catObj?.id;
+                    return (
+                      <div key={cat} className="category-legend-item">
+                        <span className="category-legend-num">{idx + 1}</span>
+                        <span className="category-legend-name">{cat}</span>
+                        {catId != null && (
+                          <button
+                            type="button"
+                            className="category-delete-btn"
+                            onClick={() => handleDeleteCategory(catId, cat)}
+                            disabled={deletingCategoryId != null || uploading}
+                            title={`Elimina "${cat}"`}
+                            aria-label={`Elimina categoria ${cat}`}
+                          >
+                            {deletingCategoryId === catId ? '…' : '×'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -994,19 +1244,20 @@ function App() {
                         <th>Categoria</th>
                         <th>Nome</th>
                         <th>Fornitore</th>
-                        <th>Aumento categoria (%)</th>
+                        <th>Disponibilità (CS)</th>
                         <th>Aumento specifico prodotto (%)</th>
-                        <th>Rincaro applicato (%)</th>
+                        <th>Aumento categoria (%)</th>
                         <th>Prezzo base</th>
                         <th>Prezzo finale</th>
-                        <th>Documenti</th>
+                        <th>Descrizione</th>
+                        <th>Image</th>
                         <th>Azioni</th>
                       </tr>
                     </thead>
                     <tbody>
                       {products.length === 0 && (
                         <tr>
-                          <td colSpan="11">Nessun prodotto trovato</td>
+                          <td colSpan="12">Nessun prodotto trovato</td>
                         </tr>
                       )}
                       {products.map((p) => (
@@ -1027,11 +1278,7 @@ function App() {
                               ? (p.fornitore.codice ? p.fornitore.codice + ' - ' : '') + p.fornitore.nome
                               : '—'}
                           </td>
-                          <td>
-                            {p.categoria && p.categoria.aumentoPercentuale != null
-                              ? p.categoria.aumentoPercentuale
-                              : ''}
-                          </td>
+                          <td>{p.disponibilita && String(p.disponibilita).trim() ? p.disponibilita : '—'}</td>
                           <td>
                             {p.aumentoPercentuale != null
                               ? p.aumentoPercentuale
@@ -1040,13 +1287,32 @@ function App() {
                           <td>
                             {getRincaroApplicato(p) != null ? getRincaroApplicato(p) : '—'}
                           </td>
-                          <td>{p.prezzoBase}</td>
-                          <td>{p.prezzoFinale}</td>
                           <td>
-                            {p.documenti && p.documenti.length > 0 ? (
-                              <span>{p.documenti.length} documenti</span>
+                            {formatPrezzo(p.prezzoBase)}
+                          </td>
+                          <td>
+                            {formatPrezzo(p.prezzoFinale)}
+                          </td>
+                          <td>
+                            {p.descrizione ? (
+                              <span title={p.descrizione}>
+                                {p.descrizione.length > 50
+                                  ? p.descrizione.substring(0, 50) + '…'
+                                  : p.descrizione}
+                              </span>
                             ) : (
-                              <span>Nessuno</span>
+                              <span>—</span>
+                            )}
+                          </td>
+                          <td>
+                            {p.image ? (
+                              <img
+                                src={p.image}
+                                alt=""
+                                style={{ maxWidth: 48, maxHeight: 48, objectFit: 'contain' }}
+                              />
+                            ) : (
+                              <span>—</span>
                             )}
                           </td>
                           <td>
@@ -1080,6 +1346,9 @@ function App() {
                     <>
                       <p className="muted">
                         SKU: <strong>{selectedProduct.sku}</strong>
+                        {selectedProduct.disponibilita != null && (
+                          <> · Disponibilità (CS): <strong>{selectedProduct.disponibilita}</strong></>
+                        )}
                       </p>
                       <form className="product-form" onSubmit={handleProductSave}>
                         <label>
@@ -1097,6 +1366,16 @@ function App() {
                             name="descrizione"
                             rows="3"
                             value={productForm.descrizione}
+                            onChange={handleProductFormChange}
+                          />
+                        </label>
+                        <label>
+                          Disponibilità (CS)
+                          <input
+                            type="text"
+                            name="disponibilita"
+                            placeholder="Es. 10, 5+"
+                            value={productForm.disponibilita}
                             onChange={handleProductFormChange}
                           />
                         </label>
@@ -1146,7 +1425,18 @@ function App() {
                       </form>
 
                       <div className="product-documents">
-                        <h4>Documenti associati</h4>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                          <h4 style={{ margin: 0 }}>Documenti associati</h4>
+                          <button
+                            type="button"
+                            className="icon-button icon-button-secondary"
+                            title={`Recupera immagini da Icecat (EAN: ${selectedProduct.ean || selectedProduct.sku || '—'})`}
+                            onClick={() => handleSyncIcecatImages(selectedProduct.id)}
+                            disabled={syncingIcecat}
+                          >
+                            {syncingIcecat ? '...' : '📷 Icecat'}
+                          </button>
+                        </div>
                         {selectedProduct.documenti &&
                         selectedProduct.documenti.length > 0 ? (
                           <ul>
@@ -1184,6 +1474,24 @@ function App() {
                 </button>
                 <button type="button" onClick={handleExportJson}>
                   Esporta JSON
+                </button>
+                <button
+                  type="button"
+                  className="icon-button icon-button-secondary"
+                  title="Importa immagini da Icecat per tutti i prodotti con EAN valido"
+                  onClick={handleSyncAllIcecatImages}
+                  disabled={syncingIcecat}
+                >
+                  {syncingIcecat ? 'Sincronizzazione...' : '📷 Icecat (tutti)'}
+                </button>
+                <button
+                  type="button"
+                  className="icon-button icon-button-secondary"
+                  title={canRollbackLastImport ? "Annulla l'ultimo import applicato" : "Nessun import applicato di recente. Applica un import da un fornitore (⇢) per poterlo annullare."}
+                  onClick={handleRollbackLastImport}
+                  disabled={savingProduct || !canRollbackLastImport}
+                >
+                  ↩ Annulla ultimo import
                 </button>
                 <button
                   type="button"
@@ -1583,6 +1891,19 @@ function App() {
                                 >
                                   ⇢
                                 </button>
+                                {log.appliedAt && (
+                                  <button
+                                    type="button"
+                                    className="icon-button icon-button-secondary"
+                                    title="Annulla import (rollback)"
+                                    disabled={uploading || String(log.tipo).toUpperCase() !== 'PRODOTTI'}
+                                    onClick={() =>
+                                      handleRollbackImport(selectedSupplierId, log.id)
+                                    }
+                                  >
+                                    ↩
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   className="icon-button icon-button-secondary"
