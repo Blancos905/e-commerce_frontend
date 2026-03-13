@@ -199,6 +199,9 @@ button:disabled {
   background: linear-gradient(135deg, #fffbfb 0%, #fff5f5 100%);
   border: 1px solid #fecaca;
   box-shadow: 0 2px 12px rgba(220, 38, 38, 0.06);
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
 .category-pager-header {
@@ -524,6 +527,51 @@ button:disabled {
 .table-wrapper {
   max-height: 80vh;
   overflow: auto;
+}
+
+.catalog-category-indicator {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 0.5rem 0.75rem;
+  background: linear-gradient(135deg, #fffbfb 0%, #fff5f5 100%);
+  border-bottom: 1px solid #fecaca;
+  font-size: 0.9rem;
+  color: #7f1d1d;
+  box-shadow: 0 2px 4px rgba(220, 38, 38, 0.08);
+}
+
+.catalog-category-indicator strong {
+  color: #b91c1c;
+}
+
+/* Cella immagine catalogo: quadratino fisso */
+.catalog-image-cell {
+  width: 56px;
+  min-width: 56px;
+  padding: 0.25rem;
+  vertical-align: middle;
+  text-align: center;
+}
+.catalog-image-cell .catalog-img {
+  display: block;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto;
+  object-fit: contain;
+  object-position: center;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+}
+
+/* Intestazione tabella catalogo fissa durante lo scroll */
+.products-layout .table-wrapper thead th {
+  position: sticky;
+  top: 2.5rem;
+  background: #fee2e2;
+  z-index: 4;
+  box-shadow: 0 2px 0 0 #fee2e2;
 }
 
 .product-detail h3 {

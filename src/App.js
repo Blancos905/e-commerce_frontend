@@ -2,6 +2,9 @@ import './App.css';
 import React, { useEffect, useRef, useState } from 'react';
 import apiClient from './apiClient';
 
+const API_BASE = apiClient.defaults.baseURL || 'http://localhost:8083/api';
+const API_ORIGIN = API_BASE.replace(/\/api\/?$/, '') || 'http://localhost:8083';
+
 function App() {
   const MAIN_CATEGORIES_ORDER = [
     'Computer',
@@ -19,7 +22,7 @@ function App() {
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
-  const [filters, setFilters] = useState({ nome: '', sku: '', categoria: '' });
+  const [filters, setFilters] = useState({ nome: '', sku: '', ean: '', categoria: '', fornitore: '' });
   const [globalIncrease, setGlobalIncrease] = useState('');
   const [activeNav, setActiveNav] = useState('catalogo');
   const [selectedSupplierId, setSelectedSupplierId] = useState('');
@@ -28,6 +31,7 @@ function App() {
     nome: '',
     descrizione: '',
     disponibilita: '',
+    ean: '',
     prezzoBase: '',
     aumentoPercentuale: '',
     categoriaId: '',
@@ -70,6 +74,23 @@ function App() {
     if (v == null || v === '') return '—';
     const n = typeof v === 'number' ? v : Number(v);
     return Number.isNaN(n) ? String(v) : n.toLocaleString('it-IT', { minimumFractionDigits: 2 });
+  };
+
+  /** EAN valido = 8-14 cifre. Se ean è SKU o non valido, mostra "EAN non disponibile". */
+  const formatEan = (p) => {
+    const e = p?.ean;
+    if (!e || typeof e !== 'string') return 'EAN non disponibile';
+    const digitsOnly = e.replace(/\D/g, '');
+    if (digitsOnly.length >= 8 && digitsOnly.length <= 14) return e;
+    return 'EAN non disponibile';
+  };
+
+  /** SKU valido = non vuoto e non sintetico (EAN-xxx). Se manca o è EAN-xxx, mostra "SKU non disponibile". */
+  const formatSku = (p) => {
+    const s = p?.sku;
+    if (!s || typeof s !== 'string' || !s.trim()) return 'SKU non disponibile';
+    if (s.trim().toUpperCase().startsWith('EAN-')) return 'SKU non disponibile'; // SKU sintetico quando il file ha solo EAN
+    return s.trim();
   };
 
   /** Rincaro percentuale effettivamente applicato (stessa priorità del backend). */
@@ -286,7 +307,9 @@ function App() {
     const params = {};
     if (filters.nome) params.nome = filters.nome;
     if (filters.sku) params.sku = filters.sku;
+    if (filters.ean) params.ean = filters.ean;
     if (filters.categoria) params.categoria = filters.categoria;
+    if (filters.fornitore) params.fornitore = filters.fornitore;
     loadProducts(params);
   };
 
@@ -439,6 +462,7 @@ function App() {
       await apiClient.post(`/suppliers/${supplierId}/imports/${importId}/apply-products`);
       await loadProducts();
       await loadSupplierImports(supplierId);
+      await refreshCanRollback();
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data;
@@ -474,6 +498,7 @@ function App() {
       await apiClient.post(`/suppliers/${supplierId}/imports/${importId}/rollback`);
       await loadProducts();
       await loadSupplierImports(supplierId);
+      await refreshCanRollback();
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data;
@@ -753,6 +778,7 @@ function App() {
       nome: product.nome || '',
       descrizione: product.descrizione || '',
       disponibilita: product.disponibilita ?? '',
+      ean: formatEan(product) !== 'EAN non disponibile' ? (product.ean || '') : '',
       prezzoBase: pb != null && pb !== '' ? String(pb) : '',
       aumentoPercentuale: product.aumentoPercentuale ?? '',
       categoriaId: product.categoria ? product.categoria.id : '',
@@ -790,6 +816,7 @@ function App() {
         nome: form.nome?.value ?? productForm.nome,
         descrizione: form.descrizione?.value ?? productForm.descrizione,
         disponibilita: (form.disponibilita?.value ?? productForm.disponibilita) || null,
+        ean: (form.ean?.value ?? productForm.ean)?.trim() || null,
         prezzoBase: prezzoBaseVal,
         aumentoPercentuale: (() => {
           const v = form.aumentoPercentuale?.value ?? productForm.aumentoPercentuale;
@@ -808,6 +835,8 @@ function App() {
       const params = {};
       if (filters.nome) params.nome = filters.nome;
       if (filters.sku) params.sku = filters.sku;
+      if (filters.ean) params.ean = filters.ean;
+      if (filters.fornitore) params.fornitore = filters.fornitore;
       if (categoryChanged) {
         const newCategory = savedProduct.categoria?.nome || '';
         if (newCategory || filters.categoria || activeCategoryPage) {
@@ -878,13 +907,14 @@ function App() {
     try {
       const res = await apiClient.post(`/products/${productId}/sync-icecat-images`);
       const added = res?.data?.imagesAdded ?? 0;
+      const diagnoseMsg = res?.data?.diagnoseMessage;
       await loadProducts();
       if (selectedProduct?.id === productId) {
         const allRes = await apiClient.get('/products');
         const p = allRes.data?.find((x) => x.id === productId);
         if (p) setSelectedProduct(p);
       }
-      setError(added > 0 ? '' : 'Nessuna immagine trovata su Icecat per questo prodotto (EAN/SKU).');
+      setError(added > 0 ? '' : (diagnoseMsg || 'Nessuna immagine trovata su Icecat per questo prodotto (EAN/SKU).'));
     } catch (e) {
       setError('Errore durante il recupero immagini da Icecat.');
     } finally {
@@ -1209,23 +1239,43 @@ function App() {
                 />
                 <input
                   type="text"
+                  name="ean"
+                  placeholder="EAN"
+                  value={filters.ean}
+                  onChange={handleFilterChange}
+                />
+                <input
+                  type="text"
                   name="categoria"
                   placeholder="Categoria"
                   value={filters.categoria}
                   onChange={handleFilterChange}
                 />
+                <input
+                  type="text"
+                  name="fornitore"
+                  placeholder="Nome fornitore"
+                  value={filters.fornitore}
+                  onChange={handleFilterChange}
+                />
                 <button type="submit" disabled={loading}>
                   {loading ? 'Caricamento...' : 'Cerca'}
                 </button>
-                {filters.categoria && (
+                {(filters.categoria || filters.fornitore) && (
                   <button
                     type="button"
                     className="secondary-button"
                     onClick={() => {
-                      const nextFilters = { ...filters, categoria: '' };
+                      const nextFilters = { ...filters, categoria: '', fornitore: '' };
                       setFilters(nextFilters);
                       setActiveCategoryPage('');
-                      loadProducts({ nome: nextFilters.nome, sku: nextFilters.sku, categoria: '' });
+                      loadProducts({
+                        nome: nextFilters.nome,
+                        sku: nextFilters.sku,
+                        ean: nextFilters.ean,
+                        categoria: '',
+                        fornitore: '',
+                      });
                     }}
                     disabled={loading || uploading}
                   >
@@ -1237,10 +1287,14 @@ function App() {
               <h3>Prodotti</h3>
               <div className="products-layout">
                 <div className="table-wrapper">
+                  <div className="catalog-category-indicator" aria-live="polite">
+                    Categoria: <strong>{activeCategoryPage || 'Tutte'}</strong>
+                  </div>
                   <table>
                     <thead>
                       <tr>
-                        <th>SKU</th>
+                        <th title="Stock Keeping Unit">SKU</th>
+                        <th title="European Article Number">EAN</th>
                         <th>Categoria</th>
                         <th>Nome</th>
                         <th>Fornitore</th>
@@ -1257,7 +1311,7 @@ function App() {
                     <tbody>
                       {products.length === 0 && (
                         <tr>
-                          <td colSpan="12">Nessun prodotto trovato</td>
+                          <td colSpan="13">Nessun prodotto trovato</td>
                         </tr>
                       )}
                       {products.map((p) => (
@@ -1270,7 +1324,20 @@ function App() {
                           }
                           onClick={() => handleProductRowClick(p)}
                         >
-                          <td>{p.sku}</td>
+                          <td>
+                            {formatSku(p) === 'SKU non disponibile' ? (
+                              <span style={{ color: 'var(--color-error, #c00)' }}>SKU non disponibile</span>
+                            ) : (
+                              formatSku(p)
+                            )}
+                          </td>
+                          <td title={formatEan(p)}>
+                            {formatEan(p) === 'EAN non disponibile' ? (
+                              <span style={{ color: 'var(--color-error, #c00)' }}>EAN non disponibile</span>
+                            ) : (
+                              formatEan(p)
+                            )}
+                          </td>
                           <td>{p.categoria ? p.categoria.nome : ''}</td>
                           <td>{p.nome}</td>
                           <td>
@@ -1304,16 +1371,32 @@ function App() {
                               <span>—</span>
                             )}
                           </td>
-                          <td>
-                            {p.image ? (
-                              <img
-                                src={p.image}
-                                alt=""
-                                style={{ maxWidth: 48, maxHeight: 48, objectFit: 'contain' }}
-                              />
-                            ) : (
-                              <span>—</span>
-                            )}
+                          <td className="catalog-image-cell">
+                            {(() => {
+                              const doc = p.documenti?.find((d) =>
+                                (d.tipo || '').toLowerCase() === 'immagine' || (d.tipo || '').toLowerCase() === 'image'
+                              );
+                              const imgUrl = doc?.url || doc?.urlDocumento;
+                              // Locali: /api/images/product/... | Esterne: proxy
+                              let src = imgUrl;
+                              if (imgUrl) {
+                                if (imgUrl.startsWith('/api/')) {
+                                  src = API_ORIGIN + imgUrl;
+                                } else if (imgUrl.includes('icecat') || imgUrl.startsWith('http')) {
+                                  src = `${API_BASE}/images/proxy?url=${encodeURIComponent(imgUrl)}`;
+                                }
+                              }
+                              return imgUrl ? (
+                                <img
+                                  className="catalog-img"
+                                  src={src}
+                                  alt=""
+                                  onError={(e) => { e.target.style.display = 'none'; }}
+                                />
+                              ) : (
+                                <span>—</span>
+                              );
+                            })()}
                           </td>
                           <td>
                             <button
@@ -1345,7 +1428,16 @@ function App() {
                   {selectedProduct && (
                     <>
                       <p className="muted">
-                        SKU: <strong>{selectedProduct.sku}</strong>
+                        SKU: {formatSku(selectedProduct) !== 'SKU non disponibile' ? (
+                          <strong>{formatSku(selectedProduct)}</strong>
+                        ) : (
+                          <em style={{ color: 'var(--color-error, #c00)' }}>non disponibile</em>
+                        )}
+                        {formatEan(selectedProduct) !== 'EAN non disponibile' ? (
+                          <> · EAN: <strong>{formatEan(selectedProduct)}</strong></>
+                        ) : (
+                          <> · EAN: <em style={{ color: 'var(--color-error, #c00)' }}>non disponibile</em></>
+                        )}
                         {selectedProduct.disponibilita != null && (
                           <> · Disponibilità (CS): <strong>{selectedProduct.disponibilita}</strong></>
                         )}
@@ -1376,6 +1468,16 @@ function App() {
                             name="disponibilita"
                             placeholder="Es. 10, 5+"
                             value={productForm.disponibilita}
+                            onChange={handleProductFormChange}
+                          />
+                        </label>
+                        <label>
+                          EAN
+                          <input
+                            type="text"
+                            name="ean"
+                            placeholder="Es. 8057284620150 (per Icecat)"
+                            value={productForm.ean}
                             onChange={handleProductFormChange}
                           />
                         </label>
@@ -1430,7 +1532,7 @@ function App() {
                           <button
                             type="button"
                             className="icon-button icon-button-secondary"
-                            title={`Recupera immagini da Icecat (EAN: ${selectedProduct.ean || selectedProduct.sku || '—'})`}
+                            title={`Scarica immagini da Icecat (EAN: ${formatEan(selectedProduct)})`}
                             onClick={() => handleSyncIcecatImages(selectedProduct.id)}
                             disabled={syncingIcecat}
                           >
@@ -1440,22 +1542,25 @@ function App() {
                         {selectedProduct.documenti &&
                         selectedProduct.documenti.length > 0 ? (
                           <ul>
-                            {selectedProduct.documenti.map((d) => (
-                              <li key={d.id || `${d.tipo}-${d.url}`}>
-                                <span>{d.tipoDocumento || d.tipo}: </span>
-                                <a
-                                  href={d.url || d.urlDocumento}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  {d.url || d.urlDocumento}
-                                </a>
-                              </li>
-                            ))}
+                            {selectedProduct.documenti.map((d) => {
+                              const url = d.url || d.urlDocumento;
+                              const href = url?.startsWith('/') ? API_ORIGIN + url : url;
+                              const isImg = (d.tipo || '').toLowerCase() === 'immagine' || (d.tipo || '').toLowerCase() === 'image';
+                              return (
+                                <li key={d.id || `${d.tipo}-${url}`}>
+                                  <span>{d.tipoDocumento || d.tipo}: </span>
+                                  {isImg && href ? (
+                                    <img src={href?.startsWith('/') ? API_ORIGIN + href : (href?.includes('icecat') || href?.startsWith('http') ? `${API_BASE}/images/proxy?url=${encodeURIComponent(href)}` : href)} alt="" style={{ maxWidth: 80, maxHeight: 80, verticalAlign: 'middle' }} onError={(e) => { e.target.style.display = 'none'; }} />
+                                  ) : (
+                                    <a href={href} target="_blank" rel="noreferrer">{url}</a>
+                                  )}
+                                </li>
+                              );
+                            })}
                           </ul>
                         ) : (
                           <p className="muted">
-                            Nessun documento associato a questo prodotto.
+                            Nessun documento associato. Clicca &quot;📷 Icecat&quot; per scaricare le immagini automaticamente.
                           </p>
                         )}
                       </div>
