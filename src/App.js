@@ -32,6 +32,8 @@ function App() {
     descrizione: '',
     disponibilita: '',
     ean: '',
+    marca: '',
+    codiceProduttore: '',
     prezzoBase: '',
     aumentoPercentuale: '',
     categoriaId: '',
@@ -779,6 +781,8 @@ function App() {
       descrizione: product.descrizione || '',
       disponibilita: product.disponibilita ?? '',
       ean: formatEan(product) !== 'EAN non disponibile' ? (product.ean || '') : '',
+      marca: product.marca || '',
+      codiceProduttore: product.codiceProduttore || '',
       prezzoBase: pb != null && pb !== '' ? String(pb) : '',
       aumentoPercentuale: product.aumentoPercentuale ?? '',
       categoriaId: product.categoria ? product.categoria.id : '',
@@ -817,6 +821,8 @@ function App() {
         descrizione: form.descrizione?.value ?? productForm.descrizione,
         disponibilita: (form.disponibilita?.value ?? productForm.disponibilita) || null,
         ean: (form.ean?.value ?? productForm.ean)?.trim() || null,
+        marca: (form.marca?.value ?? productForm.marca)?.trim() || null,
+        codiceProduttore: (form.codiceProduttore?.value ?? productForm.codiceProduttore)?.trim() || null,
         prezzoBase: prezzoBaseVal,
         aumentoPercentuale: (() => {
           const v = form.aumentoPercentuale?.value ?? productForm.aumentoPercentuale;
@@ -853,6 +859,8 @@ function App() {
       setProductForm({
         nome: savedProduct.nome || '',
         descrizione: savedProduct.descrizione || '',
+        marca: savedProduct.marca || '',
+        codiceProduttore: savedProduct.codiceProduttore || '',
         prezzoBase: spb != null && spb !== '' ? String(spb) : '',
         aumentoPercentuale: savedProduct.aumentoPercentuale ?? '',
         categoriaId: savedProduct.categoria ? savedProduct.categoria.id : '',
@@ -920,6 +928,33 @@ function App() {
     } finally {
       setSyncingIcecat(false);
     }
+  };
+
+  const handleSetDocumentAsMain = async (productId, documentId) => {
+    if (!productId || !documentId) return;
+    setError('');
+    try {
+      await apiClient.put(`/products/${productId}/documents/${documentId}/set-as-main`);
+      await loadProducts();
+      if (selectedProduct?.id === productId) {
+        const allRes = await apiClient.get('/products');
+        const p = allRes.data?.find((x) => x.id === productId);
+        if (p) setSelectedProduct(p);
+      }
+    } catch (e) {
+      setError('Errore nell\'impostazione dell\'immagine principale.');
+    }
+  };
+
+  /** Restituisce la prima immagine dai documenti, ordinata per ordine (0 = principale). */
+  const getMainImageDoc = (documenti) => {
+    if (!documenti || documenti.length === 0) return null;
+    const images = documenti.filter((d) =>
+      (d.tipo || '').toLowerCase() === 'immagine' || (d.tipo || '').toLowerCase() === 'image'
+    );
+    if (images.length === 0) return null;
+    const sorted = [...images].sort((a, b) => (a.ordine ?? 999) - (b.ordine ?? 999));
+    return sorted[0];
   };
 
   const handleSyncAllIcecatImages = async () => {
@@ -1373,9 +1408,7 @@ function App() {
                           </td>
                           <td className="catalog-image-cell">
                             {(() => {
-                              const doc = p.documenti?.find((d) =>
-                                (d.tipo || '').toLowerCase() === 'immagine' || (d.tipo || '').toLowerCase() === 'image'
-                              );
+                              const doc = getMainImageDoc(p.documenti);
                               const imgUrl = doc?.url || doc?.urlDocumento;
                               // Locali: /api/images/product/... | Esterne: proxy
                               let src = imgUrl;
@@ -1482,6 +1515,26 @@ function App() {
                           />
                         </label>
                         <label>
+                          Marca
+                          <input
+                            type="text"
+                            name="marca"
+                            placeholder="Es. VULTECH (per fallback Icecat)"
+                            value={productForm.marca}
+                            onChange={handleProductFormChange}
+                          />
+                        </label>
+                        <label>
+                          Codice produttore
+                          <input
+                            type="text"
+                            name="codiceProduttore"
+                            placeholder="Es. GS-25U3 (per fallback Icecat)"
+                            value={productForm.codiceProduttore}
+                            onChange={handleProductFormChange}
+                          />
+                        </label>
+                        <label>
                           Prezzo base
                           <input
                             type="number"
@@ -1541,19 +1594,39 @@ function App() {
                         </div>
                         {selectedProduct.documenti &&
                         selectedProduct.documenti.length > 0 ? (
-                          <ul>
-                            {selectedProduct.documenti.map((d) => {
+                          <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
+                            {[...selectedProduct.documenti]
+                              .sort((a, b) => (a.ordine ?? 999) - (b.ordine ?? 999))
+                              .map((d) => {
                               const url = d.url || d.urlDocumento;
-                              const href = url?.startsWith('/') ? API_ORIGIN + url : url;
+                              const imgSrc = url?.startsWith('/') ? (API_ORIGIN + url) : (url?.includes('icecat') || url?.startsWith('http') ? `${API_BASE}/images/proxy?url=${encodeURIComponent(url)}` : url);
                               const isImg = (d.tipo || '').toLowerCase() === 'immagine' || (d.tipo || '').toLowerCase() === 'image';
+                              const isMain = isImg && ((d.ordine ?? 999) === 0);
                               return (
-                                <li key={d.id || `${d.tipo}-${url}`}>
-                                  <span>{d.tipoDocumento || d.tipo}: </span>
-                                  {isImg && href ? (
-                                    <img src={href?.startsWith('/') ? API_ORIGIN + href : (href?.includes('icecat') || href?.startsWith('http') ? `${API_BASE}/images/proxy?url=${encodeURIComponent(href)}` : href)} alt="" style={{ maxWidth: 80, maxHeight: 80, verticalAlign: 'middle' }} onError={(e) => { e.target.style.display = 'none'; }} />
-                                  ) : (
-                                    <a href={href} target="_blank" rel="noreferrer">{url}</a>
+                                <li key={d.id || `${d.tipo}-${url}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', padding: '0.75rem', background: isMain ? '#fff5f5' : '#f9fafb', border: isMain ? '2px solid #dc2626' : '1px solid #e5e7eb', borderRadius: 8, minWidth: 140 }}>
+                                  {isImg && imgSrc ? (
+                                    <div style={{ width: 140, height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 4, overflow: 'hidden' }}>
+                                      <img
+                                        src={imgSrc}
+                                        alt="Anteprima"
+                                        style={{ maxWidth: 140, maxHeight: 140, width: 'auto', height: 'auto', objectFit: 'contain' }}
+                                        onError={(e) => { e.target.style.display = 'none'; }}
+                                      />
+                                    </div>
+                                  ) : null}
+                                  <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>{d.tipoDocumento || d.tipo}{isMain ? ' · Principale' : ''}</span>
+                                  {isImg && (
+                                    <button
+                                      type="button"
+                                      className="icon-button icon-button-secondary"
+                                      title="Imposta come immagine principale"
+                                      disabled={isMain}
+                                      onClick={() => handleSetDocumentAsMain(selectedProduct.id, d.id)}
+                                    >
+                                      {isMain ? '✓ Principale' : 'Imposta principale'}
+                                    </button>
                                   )}
+                                  {!isImg && url && <a href={url?.startsWith('/') ? API_ORIGIN + url : url} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem' }}>{url}</a>}
                                 </li>
                               );
                             })}
