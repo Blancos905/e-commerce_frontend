@@ -60,8 +60,29 @@ function App() {
   const [historyPreviewText, setHistoryPreviewText] = useState('');
   const [activeCategoryPage, setActiveCategoryPage] = useState('Computer');
   const [canRollbackLastImport, setCanRollbackLastImport] = useState(false);
+  const [showRollbackSelectModal, setShowRollbackSelectModal] = useState(false);
+  const [appliedImportsForRollback, setAppliedImportsForRollback] = useState([]);
+  const [loadingAppliedImportsForRollback, setLoadingAppliedImportsForRollback] = useState(false);
   const [syncingIcecat, setSyncingIcecat] = useState(false);
+  const [showRevisionsModal, setShowRevisionsModal] = useState(false);
+  const [allProductRevisions, setAllProductRevisions] = useState([]);
+  const [loadingAllRevisions, setLoadingAllRevisions] = useState(false);
+  const [fullscreenImage, setFullscreenImage] = useState(null);
+  const [catalogFullscreen, setCatalogFullscreen] = useState(false);
+  const catalogFullscreenRef = useRef(null);
   const savingProductRef = useRef(false);
+  const abortControllerRef = useRef(null);
+
+  const handleCancelOperation = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+  };
+
+  const setCancelMessage = () => {
+    setError('Operazione annullata.');
+    setTimeout(() => setError(''), 5000);
+  };
 
   const selectedSupplier = suppliers.find(
     (s) => String(s.id) === String(selectedSupplierId)
@@ -323,6 +344,9 @@ function App() {
       return;
     }
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setUploading(true);
     setError('');
     try {
@@ -332,7 +356,7 @@ function App() {
         formData.append('supplierId', supplierId);
       }
       // Non forzare Content-Type: Axios/browser aggiunge automaticamente il boundary corretto
-      await apiClient.post(endpoint, formData);
+      await apiClient.post(endpoint, formData, { signal: controller.signal });
       await loadProducts();
       if (supplierId) {
         // alcuni backend salvano il log import in async: facciamo qualche retry breve
@@ -380,6 +404,10 @@ function App() {
         }
       }
     } catch (e) {
+      if (e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') {
+        setCancelMessage();
+        return;
+      }
       const status = e?.response?.status;
       if (status === 413) {
         setError(
@@ -406,6 +434,7 @@ function App() {
         );
       }
     } finally {
+      abortControllerRef.current = null;
       setUploading(false);
     }
   };
@@ -416,17 +445,24 @@ function App() {
       setError('Seleziona un fornitore prima di salvare il CSV.');
       return;
     }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setUploading(true);
     setError('');
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('tipo', 'PRODOTTI');
-      await apiClient.post(`/suppliers/${supplierId}/imports`, formData);
+      await apiClient.post(`/suppliers/${supplierId}/imports`, formData, { signal: controller.signal });
       await loadProducts();
       await loadSupplierImports(supplierId);
       await refreshCanRollback();
     } catch (e) {
+      if (e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') {
+        setCancelMessage();
+        return;
+      }
       const status = e?.response?.status;
       if (status === 413) {
         setError(
@@ -452,20 +488,28 @@ function App() {
         );
       }
     } finally {
+      abortControllerRef.current = null;
       setUploading(false);
     }
   };
 
   const handleApplyImportToCatalog = async (supplierId, importId) => {
     if (!supplierId || !importId) return;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setUploading(true);
     setError('');
     try {
-      await apiClient.post(`/suppliers/${supplierId}/imports/${importId}/apply-products`);
+      await apiClient.post(`/suppliers/${supplierId}/imports/${importId}/apply-products`, null, { signal: controller.signal });
       await loadProducts();
       await loadSupplierImports(supplierId);
       await refreshCanRollback();
     } catch (e) {
+      if (e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') {
+        setCancelMessage();
+        return;
+      }
       const status = e?.response?.status;
       const data = e?.response?.data;
       const backendMessage =
@@ -485,6 +529,7 @@ function App() {
           : "Errore durante l'import nel catalogo"
       );
     } finally {
+      abortControllerRef.current = null;
       setUploading(false);
     }
   };
@@ -494,14 +539,21 @@ function App() {
     if (!window.confirm('Annullare le modifiche di questo import? I prodotti verranno ripristinati allo stato precedente.')) {
       return;
     }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setUploading(true);
     setError('');
     try {
-      await apiClient.post(`/suppliers/${supplierId}/imports/${importId}/rollback`);
+      await apiClient.post(`/suppliers/${supplierId}/imports/${importId}/rollback`, null, { signal: controller.signal });
       await loadProducts();
       await loadSupplierImports(supplierId);
       await refreshCanRollback();
     } catch (e) {
+      if (e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') {
+        setCancelMessage();
+        return;
+      }
       const status = e?.response?.status;
       const data = e?.response?.data;
       const backendMessage =
@@ -521,25 +573,61 @@ function App() {
           : 'Errore durante il rollback'
       );
     } finally {
+      abortControllerRef.current = null;
       setUploading(false);
     }
   };
 
-  const handleRollbackLastImport = async () => {
-    if (!window.confirm('Annullare l\'ultimo import applicato? I prodotti verranno ripristinati allo stato precedente.')) {
+  const openRollbackSelectModal = async () => {
+    setShowRollbackSelectModal(true);
+    setLoadingAppliedImportsForRollback(true);
+    setAppliedImportsForRollback([]);
+    try {
+      const res = await apiClient.get('/products/applied-imports');
+      let list = Array.isArray(res?.data) ? res.data : [];
+      if (list.length === 0 && suppliers.length > 0) {
+        const aggregated = [];
+        for (const s of suppliers) {
+          try {
+            const impRes = await apiClient.get(`/suppliers/${s.id}/imports`);
+            const logs = Array.isArray(impRes?.data) ? impRes.data : [];
+            for (const log of logs) {
+              if (log.appliedAt && String(log.tipo || '').toUpperCase() === 'PRODOTTI') {
+                aggregated.push({
+                  id: log.id,
+                  fileName: log.fileName,
+                  appliedAt: log.appliedAt,
+                  supplierId: s.id,
+                  supplierName: s.nome,
+                });
+              }
+            }
+          } catch (_) {}
+        }
+        aggregated.sort((a, b) => new Date(b.appliedAt) - new Date(a.appliedAt));
+        list = aggregated;
+      }
+      setAppliedImportsForRollback(list);
+    } catch (_) {
+      setAppliedImportsForRollback([]);
+    } finally {
+      setLoadingAppliedImportsForRollback(false);
+    }
+  };
+
+  const handleRollbackSelectedImport = async (supplierId, importId) => {
+    if (!supplierId || !importId) return;
+    if (!window.confirm('Annullare le modifiche di questo import? I prodotti verranno ripristinati allo stato precedente.')) {
       return;
     }
     setSavingProduct(true);
     setError('');
     try {
-      const response = await apiClient.post('/products/rollback-last-import');
-      if (response.status === 200) {
-        setCanRollbackLastImport(false);
-        await loadProducts();
-        if (selectedSupplierId) {
-          await loadSupplierImports(selectedSupplierId);
-        }
-      }
+      await apiClient.post(`/suppliers/${supplierId}/imports/${importId}/rollback`);
+      setShowRollbackSelectModal(false);
+      await loadProducts();
+      await loadSupplierImports(supplierId);
+      await refreshCanRollback();
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data;
@@ -773,6 +861,62 @@ function App() {
     }
   };
 
+  // eslint-disable-next-line no-unused-vars -- stub per evitare no-undef (referenza residua)
+  const loadProductRevisions = async () => {};
+
+  const openRevisionsModal = async () => {
+    setShowRevisionsModal(true);
+    setLoadingAllRevisions(true);
+    setAllProductRevisions([]);
+    try {
+      const res = await apiClient.get('/products/all-revisions');
+      setAllProductRevisions(Array.isArray(res.data) ? res.data : []);
+    } catch (_) {
+      setAllProductRevisions([]);
+    } finally {
+      setLoadingAllRevisions(false);
+    }
+  };
+
+  const handleRevertProduct = async (productId, revisionId, closeModal) => {
+    if (!productId || !revisionId) return;
+    if (!window.confirm('Vuoi ripristinare il prodotto allo stato di questa modifica? I dati attuali verranno sovrascritti.')) {
+      return;
+    }
+    setSavingProduct(true);
+    setError('');
+    try {
+      const res = await apiClient.post(`/products/${productId}/revert/${revisionId}`);
+      const reverted = res.data;
+      const isOrphanDelete = reverted?.revisionDeleted === true && !reverted?.id;
+      if (!isOrphanDelete && reverted?.id) {
+        const spb = reverted.prezzoBase;
+        setSelectedProduct(reverted);
+        setProductForm({
+          nome: reverted.nome || '',
+          descrizione: reverted.descrizione || '',
+          marca: reverted.marca || '',
+          codiceProduttore: reverted.codiceProduttore || '',
+          prezzoBase: spb != null && spb !== '' ? String(spb) : '',
+          aumentoPercentuale: reverted.aumentoPercentuale ?? '',
+          categoriaId: reverted.categoria ? reverted.categoria.id : '',
+          disponibilita: reverted.disponibilita ?? '',
+          ean: reverted.ean ?? '',
+        });
+      }
+      await loadProducts();
+      if (closeModal && showRevisionsModal) {
+        setAllProductRevisions((prev) => prev.filter((r) => r.id !== revisionId));
+      }
+    } catch (e) {
+      const data = e?.response?.data;
+      const msg = (typeof data === 'string' && data) || data?.message || data?.error || data?.detail;
+      setError(msg ? `Errore nel ripristino: ${msg}` : 'Errore nel ripristino del prodotto.');
+    } finally {
+      setSavingProduct(false);
+    }
+  };
+
   const handleProductRowClick = (product) => {
     setSelectedProduct(product);
     const pb = product.prezzoBase;
@@ -865,6 +1009,12 @@ function App() {
         aumentoPercentuale: savedProduct.aumentoPercentuale ?? '',
         categoriaId: savedProduct.categoria ? savedProduct.categoria.id : '',
       });
+      if (showRevisionsModal) {
+        try {
+          const revRes = await apiClient.get('/products/all-revisions');
+          setAllProductRevisions(Array.isArray(revRes.data) ? revRes.data : []);
+        } catch (_) { /* ignore */ }
+      }
     } catch (e) {
       setError('Errore nel salvataggio del prodotto');
     } finally {
@@ -910,10 +1060,13 @@ function App() {
 
   const handleSyncIcecatImages = async (productId) => {
     if (!productId) return;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setSyncingIcecat(true);
     setError('');
     try {
-      const res = await apiClient.post(`/products/${productId}/sync-icecat-images`);
+      const res = await apiClient.post(`/products/${productId}/sync-icecat-images`, null, { signal: controller.signal });
       const added = res?.data?.imagesAdded ?? 0;
       const diagnoseMsg = res?.data?.diagnoseMessage;
       await loadProducts();
@@ -924,8 +1077,13 @@ function App() {
       }
       setError(added > 0 ? '' : (diagnoseMsg || 'Nessuna immagine trovata su Icecat per questo prodotto (EAN/SKU).'));
     } catch (e) {
-      setError('Errore durante il recupero immagini da Icecat.');
+      if (e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') {
+        setCancelMessage();
+      } else {
+        setError('Errore durante il recupero immagini da Icecat.');
+      }
     } finally {
+      abortControllerRef.current = null;
       setSyncingIcecat(false);
     }
   };
@@ -958,10 +1116,13 @@ function App() {
   };
 
   const handleSyncAllIcecatImages = async () => {
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setSyncingIcecat(true);
     setError('');
     try {
-      const res = await apiClient.post('/products/sync-all-icecat-images');
+      const res = await apiClient.post('/products/sync-all-icecat-images', null, { signal: controller.signal });
       const added = res?.data?.imagesAdded ?? 0;
       await loadProducts();
       if (selectedProduct) {
@@ -971,8 +1132,13 @@ function App() {
       }
       setError(added > 0 ? '' : 'Nessuna immagine trovata su Icecat per i prodotti con EAN valido.');
     } catch (e) {
-      setError('Errore durante il recupero immagini da Icecat.');
+      if (e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') {
+        setCancelMessage();
+      } else {
+        setError('Errore durante il recupero immagini da Icecat.');
+      }
     } finally {
+      abortControllerRef.current = null;
       setSyncingIcecat(false);
     }
   };
@@ -1125,8 +1291,220 @@ function App() {
     setActiveNav(sectionId);
   };
 
+  const openFullscreenImage = (src, alt = '') => {
+    setFullscreenImage({ src, alt });
+  };
+
+  const closeFullscreenImage = () => {
+    setFullscreenImage(null);
+  };
+
+  useEffect(() => {
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') closeFullscreenImage();
+    };
+    if (fullscreenImage) {
+      document.addEventListener('keydown', handleEsc);
+      document.body.style.overflow = 'hidden';
+    }
+    return () => {
+      document.removeEventListener('keydown', handleEsc);
+      document.body.style.overflow = '';
+    };
+  }, [fullscreenImage]);
+
+  const toggleCatalogFullscreen = async () => {
+    if (!catalogFullscreenRef.current) return;
+    try {
+      if (catalogFullscreen) {
+        if (document.exitFullscreen) await document.exitFullscreen();
+      } else {
+        if (catalogFullscreenRef.current.requestFullscreen) {
+          await catalogFullscreenRef.current.requestFullscreen();
+        }
+      }
+    } catch (err) {
+      setError('Fullscreen non supportato dal browser');
+    }
+  };
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setCatalogFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   return (
     <div className="App">
+      {showRollbackSelectModal && (
+        <div
+          className="fullscreen-image-overlay"
+          style={{ alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.6)' }}
+          onClick={() => setShowRollbackSelectModal(false)}
+          role="button"
+          tabIndex={-1}
+          aria-label="Chiudi"
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: '480px',
+              width: '90%',
+              maxHeight: '80vh',
+              overflow: 'auto',
+              padding: '1.5rem',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0 }}>Scegli quale import annullare</h3>
+              <button type="button" className="icon-button" onClick={() => setShowRollbackSelectModal(false)} aria-label="Chiudi">
+                ✕
+              </button>
+            </div>
+            {loadingAppliedImportsForRollback ? (
+              <p className="muted">Caricamento...</p>
+            ) : appliedImportsForRollback.length === 0 ? (
+              <p className="muted">Nessun import applicato al catalogo.</p>
+            ) : (
+              <div className="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>File</th>
+                      <th>Fornitore</th>
+                      <th>Applicato il</th>
+                      <th>Azioni</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {appliedImportsForRollback.map((imp) => (
+                      <tr key={`${imp.supplierId}-${imp.id}`}>
+                        <td><strong>{imp.fileName}</strong></td>
+                        <td>{imp.supplierName || '—'}</td>
+                        <td>{imp.appliedAt ? new Date(imp.appliedAt).toLocaleString() : '—'}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="icon-button icon-button-secondary"
+                            title="Annulla questo import"
+                            disabled={savingProduct}
+                            onClick={() => handleRollbackSelectedImport(imp.supplierId, imp.id)}
+                          >
+                            ↩ Annulla
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showRevisionsModal && (
+        <div
+          className="fullscreen-image-overlay"
+          style={{ alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.6)' }}
+          onClick={() => setShowRevisionsModal(false)}
+          role="button"
+          tabIndex={-1}
+          aria-label="Chiudi"
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: '560px',
+              width: '90%',
+              maxHeight: '80vh',
+              overflow: 'auto',
+              padding: '1.5rem',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0 }}>Cronologia modifiche prodotti</h3>
+              <button type="button" className="icon-button" onClick={() => setShowRevisionsModal(false)} aria-label="Chiudi">
+                ✕
+              </button>
+            </div>
+            {loadingAllRevisions ? (
+              <p className="muted">Caricamento...</p>
+            ) : allProductRevisions.length === 0 ? (
+              <p className="muted">Nessuna modifica registrata. Le modifiche appaiono qui dopo aver salvato un prodotto.</p>
+            ) : (
+              <div className="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Data</th>
+                      <th>Prodotto</th>
+                      <th>Azioni</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allProductRevisions.map((rev) => {
+                      const d = rev.createdAt ? new Date(rev.createdAt) : null;
+                      const dateStr = d ? d.toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+                      const nomeSnap = rev.nome || '(senza nome)';
+                      return (
+                        <tr key={rev.id}>
+                          <td>{dateStr}</td>
+                          <td>
+                            {nomeSnap}
+                            {rev.productId && <span className="muted" style={{ marginLeft: '0.25rem', fontSize: '0.85em' }}> (ID: {rev.productId})</span>}
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="icon-button icon-button-secondary"
+                              title="Ripristina il prodotto a questa versione"
+                              disabled={savingProduct || !rev.productId}
+                              onClick={() => handleRevertProduct(rev.productId, rev.id, true)}
+                            >
+                              ↩ Annulla modifiche
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {fullscreenImage && (
+        <div
+          className="fullscreen-image-overlay"
+          onClick={closeFullscreenImage}
+          role="button"
+          tabIndex={-1}
+          aria-label="Chiudi ingrandimento"
+        >
+          <button
+            type="button"
+            className="fullscreen-image-close"
+            onClick={closeFullscreenImage}
+            aria-label="Chiudi"
+          >
+            ✕
+          </button>
+          <img
+            src={fullscreenImage.src}
+            alt={fullscreenImage.alt}
+            className="fullscreen-image-img"
+            onClick={(e) => e.stopPropagation()}
+            draggable={false}
+          />
+        </div>
+      )}
       <header className="app-header">
         <div className="app-header-inner">
           <div className="logo-block">
@@ -1144,9 +1522,19 @@ function App() {
       </header>
 
       <main className="app-main">
-        {uploading && (
-          <div className="alert alert-info">
-            Import in corso, attendere il completamento...
+        {(uploading || syncingIcecat) && (
+          <div className="alert alert-info" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+            <span>
+              {uploading ? 'Import in corso...' : 'Sincronizzazione Icecat in corso...'} attendere il completamento.
+            </span>
+            <button
+              type="button"
+              className="danger-button"
+              onClick={handleCancelOperation}
+              title="Annulla l'operazione in corso"
+            >
+              Annulla
+            </button>
           </div>
         )}
         {error && <div className="alert alert-error">{error}</div>}
@@ -1319,8 +1707,38 @@ function App() {
                 )}
               </form>
 
-              <h3>Prodotti</h3>
-              <div className="products-layout">
+              <div className="catalog-fullscreen-wrapper" ref={catalogFullscreenRef}>
+                <div className="catalog-header-row">
+                  <h3>Prodotti</h3>
+                  <button
+                    type="button"
+                    className="catalog-fullscreen-btn"
+                    onClick={toggleCatalogFullscreen}
+                    title={catalogFullscreen ? 'Esci da schermo intero' : 'Catalogo a schermo intero'}
+                    aria-label={catalogFullscreen ? 'Esci da schermo intero' : 'Catalogo a schermo intero'}
+                  >
+                    {catalogFullscreen ? (
+                      <>
+                        <span className="catalog-fullscreen-icon" aria-hidden>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M18 6L6 18M6 6l12 12" />
+                          </svg>
+                        </span>
+                        Esci da schermo intero
+                      </>
+                    ) : (
+                      <>
+                        <span className="catalog-fullscreen-icon" aria-hidden>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+                          </svg>
+                        </span>
+                        Schermo intero
+                      </>
+                    )}
+                  </button>
+                </div>
+                <div className="products-layout">
                 <div className="table-wrapper">
                   <div className="catalog-category-indicator" aria-live="polite">
                     Categoria: <strong>{activeCategoryPage || 'Tutte'}</strong>
@@ -1421,10 +1839,24 @@ function App() {
                               }
                               return imgUrl ? (
                                 <img
-                                  className="catalog-img"
+                                  className="catalog-img catalog-img-zoom"
                                   src={src}
-                                  alt=""
+                                  alt={p.nome || ''}
                                   onError={(e) => { e.target.style.display = 'none'; }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openFullscreenImage(src, p.nome || '');
+                                  }}
+                                  role="button"
+                                  tabIndex={0}
+                                  title="Clicca per ingrandire a schermo intero"
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      openFullscreenImage(src, p.nome || '');
+                                    }
+                                  }}
                                 />
                               ) : (
                                 <span>—</span>
@@ -1641,6 +2073,7 @@ function App() {
                   )}
                 </div>
               </div>
+              </div>
 
             </section>
 
@@ -1665,11 +2098,20 @@ function App() {
                 <button
                   type="button"
                   className="icon-button icon-button-secondary"
-                  title={canRollbackLastImport ? "Annulla l'ultimo import applicato" : "Nessun import applicato di recente. Applica un import da un fornitore (⇢) per poterlo annullare."}
-                  onClick={handleRollbackLastImport}
+                  title={canRollbackLastImport ? "Scegli quale import annullare" : "Nessun import applicato. Applica un import da un fornitore (⇢) per poterlo annullare."}
+                  onClick={openRollbackSelectModal}
                   disabled={savingProduct || !canRollbackLastImport}
                 >
-                  ↩ Annulla ultimo import
+                  ↩ Annulla import
+                </button>
+                <button
+                  type="button"
+                  className="icon-button icon-button-secondary"
+                  title="Cronologia modifiche di tutti i prodotti"
+                  onClick={openRevisionsModal}
+                  disabled={savingProduct}
+                >
+                  ↩ Annulla modifiche prodotti
                 </button>
                 <button
                   type="button"
