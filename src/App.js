@@ -1,5 +1,6 @@
 import './App.css';
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import apiClient from './apiClient';
 
 const API_BASE = apiClient.defaults.baseURL || 'http://localhost:8083/api';
@@ -69,13 +70,25 @@ function App() {
   const [loadingAllRevisions, setLoadingAllRevisions] = useState(false);
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const [catalogFullscreen, setCatalogFullscreen] = useState(false);
+  const [exportingToBitplanet, setExportingToBitplanet] = useState(false);
+  const [bitplanetMessage, setBitplanetMessage] = useState('');
+  const [manualImageFile, setManualImageFile] = useState(null);
+  const [addingDocument, setAddingDocument] = useState(false);
   const catalogFullscreenRef = useRef(null);
+  const fullscreenPortalRef = useRef(null);
+  const [fullscreenPortalRoot, setFullscreenPortalRoot] = useState(null);
   const savingProductRef = useRef(false);
   const abortControllerRef = useRef(null);
 
   const handleCancelOperation = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
+    }
+    // Chiedi anche al backend di interrompere in modo cooperativo l'import corrente (se attivo)
+    try {
+      apiClient.post('/import/cancel');
+    } catch (e) {
+      // Non bloccare la UI se la chiamata di cancel fallisce
     }
   };
 
@@ -319,6 +332,46 @@ function App() {
       refreshCanRollback();
     }
   }, [activeNav]);
+
+  const handleExportToBitplanet = async () => {
+    setExportingToBitplanet(true);
+    setBitplanetMessage('');
+    setError('');
+    try {
+      // Esporta il catalogo virtuale in JSON (endpoint già esistente nel backend)
+      const response = await apiClient.get('/products/export/json');
+      if (!response || !Array.isArray(response.data)) {
+        setBitplanetMessage(
+          'Esportazione completata, ma il formato ricevuto non è quello atteso. Verifica il backend /products/export/json.'
+        );
+      } else {
+        setBitplanetMessage(
+          'Catalogo virtuale esportato correttamente. Configura ora l’integrazione Magento/Bitplanet per consumare questi dati.'
+        );
+      }
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore durante l’esportazione del catalogo virtuale verso Bitplanet (${details})`
+          : 'Errore durante l’esportazione del catalogo virtuale verso Bitplanet'
+      );
+    } finally {
+      setExportingToBitplanet(false);
+    }
+  };
 
   const handleFilterChange = (e) => {
     const { name, value } = e.target;
@@ -1104,6 +1157,63 @@ function App() {
     }
   };
 
+  const handleAddDocumentFromUrl = async (productId) => {
+    if (!productId || !manualImageFile) return;
+    setAddingDocument(true);
+    setError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', manualImageFile);
+      await apiClient.post(`/products/${productId}/documents/upload`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setManualImageFile(null);
+      await loadProducts();
+      if (selectedProduct?.id === productId) {
+        const allRes = await apiClient.get('/products');
+        const p = allRes.data?.find((x) => x.id === productId);
+        if (p) setSelectedProduct(p);
+      }
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore nel caricamento dell'immagine (${details})`
+          : 'Errore nel caricamento dell\'immagine'
+      );
+    } finally {
+      setAddingDocument(false);
+    }
+  };
+
+  const handleDeleteDocument = async (productId, documentId) => {
+    if (!productId || !documentId) return;
+    setError('');
+    try {
+      await apiClient.delete(`/products/${productId}/documents/${documentId}`);
+      await loadProducts();
+      if (selectedProduct?.id === productId) {
+        const allRes = await apiClient.get('/products');
+        const p = allRes.data?.find((x) => x.id === productId);
+        if (p) setSelectedProduct(p);
+      }
+    } catch (e) {
+      setError('Errore nella rimozione del documento.');
+    }
+  };
+
   /** Restituisce la prima immagine dai documenti, ordinata per ordine (0 = principale). */
   const getMainImageDoc = (documenti) => {
     if (!documenti || documenti.length === 0) return null;
@@ -1314,19 +1424,36 @@ function App() {
   }, [fullscreenImage]);
 
   const toggleCatalogFullscreen = async () => {
-    if (!catalogFullscreenRef.current) return;
     try {
       if (catalogFullscreen) {
         if (document.exitFullscreen) await document.exitFullscreen();
       } else {
-        if (catalogFullscreenRef.current.requestFullscreen) {
-          await catalogFullscreenRef.current.requestFullscreen();
-        }
+        setCatalogFullscreen(true);
       }
     } catch (err) {
       setError('Fullscreen non supportato dal browser');
     }
   };
+
+  useEffect(() => {
+    const el = document.createElement('div');
+    el.id = 'catalog-fullscreen-portal';
+    document.body.appendChild(el);
+    setFullscreenPortalRoot(el);
+    return () => {
+      if (document.body.contains(el)) document.body.removeChild(el);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!catalogFullscreen || !fullscreenPortalRoot) return;
+    const t = setTimeout(() => {
+      if (fullscreenPortalRef.current && !document.fullscreenElement) {
+        fullscreenPortalRef.current.requestFullscreen?.();
+      }
+    }, 50);
+    return () => clearTimeout(t);
+  }, [catalogFullscreen, fullscreenPortalRoot]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -1518,6 +1645,13 @@ function App() {
             <h1>Catalogo virtuale</h1>
             <p>Gestione interna catalogo, prezzi e documenti</p>
           </div>
+          <div className="app-header-logo-right">
+            <img
+              src={process.env.PUBLIC_URL + '/logo%20160x160.webp'}
+              alt="Logo"
+              className="app-logo-160"
+            />
+          </div>
         </div>
       </header>
 
@@ -1571,6 +1705,44 @@ function App() {
           <>
             <section className="card">
               <h2>Catalogo virtuale</h2>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.5rem',
+                  marginTop: '0.5rem',
+                  marginBottom: '0.75rem',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '0.5rem',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <p className="muted" style={{ margin: 0, flex: 1 }}>
+                    Trasferisci il catalogo virtuale verso l’integrazione Magento / Bitplanet utilizzando
+                    l’endpoint di esportazione JSON del backend.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleExportToBitplanet}
+                    disabled={exportingToBitplanet || uploading}
+                  >
+                    {exportingToBitplanet
+                      ? 'Trasferimento su Bitplanet in corso...'
+                      : 'Trasferisci catalogo su Bitplanet'}
+                  </button>
+                </div>
+                {bitplanetMessage && (
+                  <div className="alert alert-info" style={{ margin: 0 }}>
+                    {bitplanetMessage}
+                  </div>
+                )}
+              </div>
 
               <div className="category-pager">
                 <div className="category-pager-header">
@@ -1692,13 +1864,11 @@ function App() {
                       const nextFilters = { ...filters, categoria: '', fornitore: '' };
                       setFilters(nextFilters);
                       setActiveCategoryPage('');
-                      loadProducts({
-                        nome: nextFilters.nome,
-                        sku: nextFilters.sku,
-                        ean: nextFilters.ean,
-                        categoria: '',
-                        fornitore: '',
-                      });
+                      const params = {};
+                      if (nextFilters.nome) params.nome = nextFilters.nome;
+                      if (nextFilters.sku) params.sku = nextFilters.sku;
+                      if (nextFilters.ean) params.ean = nextFilters.ean;
+                      loadProducts(params);
                     }}
                     disabled={loading || uploading}
                   >
@@ -1707,7 +1877,9 @@ function App() {
                 )}
               </form>
 
-              <div className="catalog-fullscreen-wrapper" ref={catalogFullscreenRef}>
+              {(() => {
+                const catalogFSContent = (
+                  <>
                 <div className="catalog-header-row">
                   <h3>Prodotti</h3>
                   <button
@@ -1738,7 +1910,86 @@ function App() {
                     )}
                   </button>
                 </div>
-                <div className="products-layout">
+
+                {/* In fullscreen con prodotto selezionato: pannello dettaglio a tutta altezza con X per chiudere */}
+                {catalogFullscreen && selectedProduct ? (
+                  <div className="catalog-fullscreen-detail">
+                    <div className="catalog-fullscreen-detail-header">
+                      <h3>Dettaglio prodotto</h3>
+                      <button
+                        type="button"
+                        className="catalog-detail-close-btn"
+                        onClick={() => setSelectedProduct(null)}
+                        title="Chiudi e torna al catalogo"
+                        aria-label="Chiudi e torna al catalogo"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <div className="catalog-fullscreen-detail-body">
+                      <p className="muted">
+                        SKU: {formatSku(selectedProduct) !== 'SKU non disponibile' ? (
+                          <strong>{formatSku(selectedProduct)}</strong>
+                        ) : (
+                          <em style={{ color: 'var(--color-error, #c00)' }}>non disponibile</em>
+                        )}
+                        {formatEan(selectedProduct) !== 'EAN non disponibile' ? (
+                          <> · EAN: <strong>{formatEan(selectedProduct)}</strong></>
+                        ) : (
+                          <> · EAN: <em style={{ color: 'var(--color-error, #c00)' }}>non disponibile</em></>
+                        )}
+                        {selectedProduct.disponibilita != null && (
+                          <> · Disponibilità (CS): <strong>{selectedProduct.disponibilita}</strong></>
+                        )}
+                      </p>
+                      <form className="product-form" onSubmit={handleProductSave}>
+                        <label>Nome <input type="text" name="nome" value={productForm.nome} onChange={handleProductFormChange} /></label>
+                        <label>Descrizione <textarea name="descrizione" rows="3" value={productForm.descrizione} onChange={handleProductFormChange} /></label>
+                        <label>Disponibilità (CS) <input type="text" name="disponibilita" placeholder="Es. 10, 5+" value={productForm.disponibilita} onChange={handleProductFormChange} /></label>
+                        <label>EAN <input type="text" name="ean" placeholder="Es. 8057284620150 (per Icecat)" value={productForm.ean} onChange={handleProductFormChange} /></label>
+                        <label>Marca <input type="text" name="marca" placeholder="Es. VULTECH (per fallback Icecat)" value={productForm.marca} onChange={handleProductFormChange} /></label>
+                        <label>Codice produttore <input type="text" name="codiceProduttore" placeholder="Es. GS-25U3 (per fallback Icecat)" value={productForm.codiceProduttore} onChange={handleProductFormChange} /></label>
+                        <label>Prezzo base <input type="number" step="0.01" name="prezzoBase" value={productForm.prezzoBase ?? ''} onChange={handleProductFormChange} /></label>
+                        <label>Aumento specifico prodotto (%) <input type="number" step="0.01" name="aumentoPercentuale" value={productForm.aumentoPercentuale} onChange={handleProductFormChange} /></label>
+                        <label>Categoria <select name="categoriaId" value={productForm.categoriaId} onChange={handleProductFormChange}><option value="">Nessuna</option>{sortedCategories.map((c) => (<option key={c.id} value={c.id}>{c.nome}</option>))}</select></label>
+                        <div className="product-form-actions"><button type="submit" disabled={savingProduct}>{savingProduct ? 'Salvataggio...' : 'Salva modifiche'}</button></div>
+                      </form>
+                      <div className="product-documents">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                          <h4 style={{ margin: 0 }}>Documenti associati</h4>
+                          <button type="button" className="icon-button icon-button-secondary" title={`Scarica immagini da Icecat (EAN: ${formatEan(selectedProduct)})`} onClick={() => handleSyncIcecatImages(selectedProduct.id)} disabled={syncingIcecat}>{syncingIcecat ? '...' : '📷 Icecat'}</button>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginBottom: '0.75rem' }}>
+                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            <input type="file" accept="image/*" onChange={(e) => { const file = e.target.files && e.target.files[0]; setManualImageFile(file || null); }} />
+                            <button type="button" className="icon-button icon-button-secondary" onClick={() => handleAddDocumentFromUrl(selectedProduct.id)} disabled={addingDocument || !manualImageFile} title="Carica un'immagine dal PC">{addingDocument ? 'Caricamento...' : 'Carica immagine'}</button>
+                          </div>
+                          <span className="muted" style={{ fontSize: '0.75rem' }}>Usa questo campo se Icecat non trova l&apos;immagine o se quella trovata è sbagliata. L&apos;immagine viene salvata localmente.</span>
+                        </div>
+                        {selectedProduct.documenti && selectedProduct.documenti.length > 0 ? (
+                          <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
+                            {[...selectedProduct.documenti].sort((a, b) => (a.ordine ?? 999) - (b.ordine ?? 999)).map((d) => {
+                              const url = d.url || d.urlDocumento;
+                              const imgSrc = url?.startsWith('/') ? (API_ORIGIN + url) : (url?.includes('icecat') || url?.startsWith('http') ? `${API_BASE}/images/proxy?url=${encodeURIComponent(url)}` : url);
+                              const isImg = (d.tipo || '').toLowerCase() === 'immagine' || (d.tipo || '').toLowerCase() === 'image';
+                              const isMain = isImg && ((d.ordine ?? 999) === 0);
+                              return (
+                                <li key={d.id || `${d.tipo}-${url}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', padding: '0.75rem', background: isMain ? '#fff5f5' : '#f9fafb', border: isMain ? '2px solid #dc2626' : '1px solid #e5e7eb', borderRadius: 8, minWidth: 140 }}>
+                                  {isImg && imgSrc ? (<div style={{ width: 140, height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 4, overflow: 'hidden' }}><img src={imgSrc} alt="Anteprima" style={{ maxWidth: 140, maxHeight: 140, width: 'auto', height: 'auto', objectFit: 'contain' }} onError={(e) => { e.target.style.display = 'none'; }} /></div>) : null}
+                                  <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>{d.tipoDocumento || d.tipo}{isMain ? ' · Principale' : ''}</span>
+                                  {isImg && (<button type="button" className="icon-button icon-button-secondary" title="Imposta come immagine principale" disabled={isMain} onClick={() => handleSetDocumentAsMain(selectedProduct.id, d.id)}>{isMain ? '✓ Principale' : 'Imposta principale'}</button>)}
+                                  {d.id && (<button type="button" className="icon-button icon-button-danger" title="Rimuovi documento" onClick={() => handleDeleteDocument(selectedProduct.id, d.id)}>🗑️</button>)}
+                                  {!isImg && url && <a href={url?.startsWith('/') ? API_ORIGIN + url : url} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem' }}>{url}</a>}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (<p className="muted">Nessun documento associato. Clicca &quot;📷 Icecat&quot; per scaricare le immagini automaticamente.</p>)}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                <div className={`products-layout ${catalogFullscreen ? 'products-layout-fullscreen-only' : ''}`}>
                 <div className="table-wrapper">
                   <div className="catalog-category-indicator" aria-live="polite">
                     Categoria: <strong>{activeCategoryPage || 'Tutte'}</strong>
@@ -1882,6 +2133,7 @@ function App() {
                   </table>
                 </div>
 
+                {!catalogFullscreen && (
                 <div className="product-detail">
                   <h3>Dettaglio / modifica prodotto</h3>
                   {!selectedProduct && (
@@ -2024,6 +2276,30 @@ function App() {
                             {syncingIcecat ? '...' : '📷 Icecat'}
                           </button>
                         </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginBottom: '0.75rem' }}>
+                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => {
+                                const file = e.target.files && e.target.files[0];
+                                setManualImageFile(file || null);
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="icon-button icon-button-secondary"
+                              onClick={() => handleAddDocumentFromUrl(selectedProduct.id)}
+                              disabled={addingDocument || !manualImageFile}
+                              title="Carica un'immagine dal PC"
+                            >
+                              {addingDocument ? 'Caricamento...' : 'Carica immagine'}
+                            </button>
+                          </div>
+                          <span className="muted" style={{ fontSize: '0.75rem' }}>
+                            Usa questo campo se Icecat non trova l'immagine o se quella trovata è sbagliata. L'immagine viene salvata localmente.
+                          </span>
+                        </div>
                         {selectedProduct.documenti &&
                         selectedProduct.documenti.length > 0 ? (
                           <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
@@ -2058,6 +2334,16 @@ function App() {
                                       {isMain ? '✓ Principale' : 'Imposta principale'}
                                     </button>
                                   )}
+                                  {d.id && (
+                                    <button
+                                      type="button"
+                                      className="icon-button icon-button-danger"
+                                      title="Rimuovi documento"
+                                      onClick={() => handleDeleteDocument(selectedProduct.id, d.id)}
+                                    >
+                                      🗑️
+                                    </button>
+                                  )}
                                   {!isImg && url && <a href={url?.startsWith('/') ? API_ORIGIN + url : url} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem' }}>{url}</a>}
                                 </li>
                               );
@@ -2072,8 +2358,21 @@ function App() {
                     </>
                   )}
                 </div>
+                )}
               </div>
-              </div>
+              )}
+                  </>
+                );
+                return (
+                  <>
+                    {!catalogFullscreen && <div className="catalog-fullscreen-wrapper" ref={catalogFullscreenRef}>{catalogFSContent}</div>}
+                    {catalogFullscreen && fullscreenPortalRoot && createPortal(
+                      <div className="catalog-fullscreen-wrapper" ref={fullscreenPortalRef} style={{ width: '100vw', height: '100vh', minWidth: '100vw', minHeight: '100vh', maxWidth: 'none', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#f9fafb', boxSizing: 'border-box' }}>{catalogFSContent}</div>,
+                      fullscreenPortalRoot
+                    )}
+                  </>
+                );
+              })()}
 
             </section>
 
