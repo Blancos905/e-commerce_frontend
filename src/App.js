@@ -65,6 +65,7 @@ function App() {
   const [appliedImportsForRollback, setAppliedImportsForRollback] = useState([]);
   const [loadingAppliedImportsForRollback, setLoadingAppliedImportsForRollback] = useState(false);
   const [syncingIcecat, setSyncingIcecat] = useState(false);
+  const [syncingMagento, setSyncingMagento] = useState(false);
   const [showRevisionsModal, setShowRevisionsModal] = useState(false);
   const [allProductRevisions, setAllProductRevisions] = useState([]);
   const [loadingAllRevisions, setLoadingAllRevisions] = useState(false);
@@ -914,6 +915,32 @@ function App() {
     }
   };
 
+  const handleExportMagento = async () => {
+    setSyncingMagento(true);
+    setError('');
+    try {
+      const response = await apiClient.post('/products/export/magento');
+      const d = response.data;
+      const created = d.created ?? 0;
+      const updated = d.updated ?? 0;
+      const skipped = d.skipped ?? 0;
+      const errs = d.errorsBySku ?? {};
+      const errCount = Object.keys(errs).length;
+      let msg = `Magento: ${created} creati, ${updated} aggiornati, ${skipped} saltati`;
+      if (errCount > 0) {
+        msg += `, ${errCount} errori (vedi console)`;
+        console.warn('Errori Magento per SKU:', errs);
+      }
+      alert(msg);
+    } catch (e) {
+      const data = e?.response?.data;
+      const errMsg = data?.error ?? data?.hint ?? e?.message ?? 'Errore durante l\'esportazione su Magento';
+      setError(errMsg);
+    } finally {
+      setSyncingMagento(false);
+    }
+  };
+
   // eslint-disable-next-line no-unused-vars -- stub per evitare no-undef (referenza residua)
   const loadProductRevisions = async () => {};
 
@@ -1634,16 +1661,18 @@ function App() {
       )}
       <header className="app-header">
         <div className="app-header-inner">
-          <div className="logo-block">
-            <img
-              src={process.env.PUBLIC_URL + '/logo.png'}
-              alt="Hydra Solutions"
-              className="app-logo"
-            />
-          </div>
-          <div>
-            <h1>Catalogo virtuale</h1>
-            <p>Gestione interna catalogo, prezzi e documenti</p>
+          <div className="app-header-left">
+            <div className="logo-block">
+              <img
+                src={process.env.PUBLIC_URL + '/logo.png'}
+                alt="Hydra Solutions"
+                className="app-logo"
+              />
+            </div>
+            <div>
+              <h1>Catalogo virtuale</h1>
+              <p>Gestione interna catalogo, prezzi e documenti</p>
+            </div>
           </div>
           <div className="app-header-logo-right">
             <img
@@ -2384,6 +2413,15 @@ function App() {
                 </button>
                 <button type="button" onClick={handleExportJson}>
                   Esporta JSON
+                </button>
+                <button
+                  type="button"
+                  className="icon-button icon-button-secondary"
+                  title="Sincronizza l'intero catalogo su Magento via REST API"
+                  onClick={handleExportMagento}
+                  disabled={syncingMagento}
+                >
+                  {syncingMagento ? 'Sincronizzazione Magento...' : '📤 Esporta su Magento'}
                 </button>
                 <button
                   type="button"
