@@ -7,6 +7,8 @@ const API_BASE = apiClient.defaults.baseURL || 'http://localhost:8083/api';
 const API_ORIGIN = API_BASE.replace(/\/api\/?$/, '') || 'http://localhost:8083';
 
 function App() {
+  const OFFERTA_CATEGORY_NAME = 'In offerta';
+  const NEW_PRODUCTS_CATEGORY_NAME = 'Nuovi prodotti';
   const MAIN_CATEGORIES_ORDER = [
     'Computer',
     'Accessori',
@@ -17,6 +19,8 @@ function App() {
     'Ufficio',
     'Scuola e Laboratori',
     'Best sellers',
+    NEW_PRODUCTS_CATEGORY_NAME,
+    OFFERTA_CATEGORY_NAME,
     'Videosorveglianza',
   ];
 
@@ -44,6 +48,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [savingProduct, setSavingProduct] = useState(false);
+  const [creatingProduct, setCreatingProduct] = useState(false);
   const [savingCategory, setSavingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [addingCategory, setAddingCategory] = useState(false);
@@ -66,6 +71,7 @@ function App() {
   const [loadingAppliedImportsForRollback, setLoadingAppliedImportsForRollback] = useState(false);
   const [syncingIcecat, setSyncingIcecat] = useState(false);
   const [syncingMagento, setSyncingMagento] = useState(false);
+  const [syncingMagentoCategories, setSyncingMagentoCategories] = useState(false);
   const [showRevisionsModal, setShowRevisionsModal] = useState(false);
   const [allProductRevisions, setAllProductRevisions] = useState([]);
   const [loadingAllRevisions, setLoadingAllRevisions] = useState(false);
@@ -73,13 +79,30 @@ function App() {
   const [catalogFullscreen, setCatalogFullscreen] = useState(false);
   const [exportingToBitplanet, setExportingToBitplanet] = useState(false);
   const [bitplanetMessage, setBitplanetMessage] = useState('');
+  const [catalogProductCount, setCatalogProductCount] = useState(null);
   const [manualImageFile, setManualImageFile] = useState(null);
   const [addingDocument, setAddingDocument] = useState(false);
+  const [showManualProductForm, setShowManualProductForm] = useState(false);
+  const [manualProductForm, setManualProductForm] = useState({
+    sku: '',
+    nome: '',
+    descrizione: '',
+    disponibilita: '',
+    ean: '',
+    marca: '',
+    codiceProduttore: '',
+    prezzoBase: '',
+    aumentoPercentuale: '',
+    categoriaId: '',
+  });
   const catalogFullscreenRef = useRef(null);
   const fullscreenPortalRef = useRef(null);
   const [fullscreenPortalRoot, setFullscreenPortalRoot] = useState(null);
+  const catalogTableRef = useRef(null);
   const savingProductRef = useRef(false);
   const abortControllerRef = useRef(null);
+
+  const [togglingOffer, setTogglingOffer] = useState(false);
 
   const handleCancelOperation = () => {
     if (abortControllerRef.current) {
@@ -90,6 +113,12 @@ function App() {
       apiClient.post('/import/cancel');
     } catch (e) {
       // Non bloccare la UI se la chiamata di cancel fallisce
+    }
+    // Se è in corso una sync Magento, chiedi stop cooperativo anche lì
+    try {
+      apiClient.post('/products/export/magento/cancel');
+    } catch (e) {
+      // non bloccare la UI
     }
   };
 
@@ -107,10 +136,98 @@ function App() {
     return idx === -1 ? 999 : idx;
   };
 
+  const getCategoryIdByName = (categoryName) => {
+    const target = String(categoryName ?? '').trim().toLowerCase();
+    if (!target) return '';
+    const cat = categories.find((c) => String(c?.nome ?? '').trim().toLowerCase() === target);
+    return cat?.id ?? '';
+  };
+
   const formatPrezzo = (v) => {
     if (v == null || v === '') return '—';
     const n = typeof v === 'number' ? v : Number(v);
     return Number.isNaN(n) ? String(v) : n.toLocaleString('it-IT', { minimumFractionDigits: 2 });
+  };
+
+  const isProductInOffer = (p) => {
+    if (!p) return false;
+    const nomeCat = p.categoria?.nome;
+    return (
+      nomeCat != null &&
+      String(nomeCat).trim().toLowerCase() === String(OFFERTA_CATEGORY_NAME).trim().toLowerCase()
+    );
+  };
+
+  const ensureOfferCategory = async () => {
+    const norm = (s) => String(s ?? '').trim().toLowerCase();
+    const current = categories.find((c) => norm(c?.nome) === norm(OFFERTA_CATEGORY_NAME));
+    if (current) return current;
+
+    // Crea la categoria "In offerta" se non esiste (serve per rendere l'offerta una categoria reale).
+    try {
+      await apiClient.post('/categories', { nome: OFFERTA_CATEGORY_NAME });
+    } catch (e) {
+      // se già esiste, oppure seed/creazione falliscono, recuperiamo dalla lista categorie
+    }
+
+    const res = await apiClient.get('/categories');
+    const list = Array.isArray(res.data) ? res.data : [];
+    setCategories(list);
+    return list.find((c) => norm(c?.nome) === norm(OFFERTA_CATEGORY_NAME));
+  };
+
+  const handleToggleOfferForSelectedProduct = async (product) => {
+    if (!product?.id) return;
+    if (togglingOffer) return;
+
+    setTogglingOffer(true);
+    setError('');
+    try {
+      const inOffer = isProductInOffer(product);
+      const offerCategory = inOffer ? null : await ensureOfferCategory();
+      if (!inOffer && !offerCategory?.id) {
+        throw new Error('Categoria "In offerta" non disponibile.');
+      }
+
+      // In backend l'update del prodotto sovrascrive anche i campi (nome/descrizione/prezzi),
+      // quindi per "toggle offerta" dobbiamo rispedire tutti i valori attuali e cambiare solo la categoria.
+      const payload = {
+        nome: product.nome,
+        descrizione: product.descrizione,
+        disponibilita: product.disponibilita ?? null,
+        ean: product.ean ?? null,
+        marca: product.marca ?? null,
+        codiceProduttore: product.codiceProduttore ?? null,
+        prezzoBase: product.prezzoBase ?? null,
+        aumentoPercentuale: product.aumentoPercentuale ?? null,
+        categoriaId: inOffer ? null : offerCategory.id,
+      };
+
+      await apiClient.put(`/products/${product.id}`, payload);
+      setSelectedProduct(null);
+
+      // Dopo il toggle, atterriamo nella lista coerente.
+      if (inOffer) {
+        await applyCategoryPage('');
+      } else {
+        await applyCategoryPage(OFFERTA_CATEGORY_NAME);
+      }
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) || data?.message || data?.error || data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+
+      setError(details ? `Errore nel cambio offerta (${details})` : 'Errore nel cambio offerta');
+    } finally {
+      setTogglingOffer(false);
+    }
   };
 
   /** EAN valido = 8-14 cifre. Se ean è SKU o non valido, mostra "EAN non disponibile". */
@@ -150,6 +267,8 @@ function App() {
     return aName.localeCompare(bName, 'it', { sensitivity: 'base' });
   });
 
+  const activeCategoryId = activeCategoryPage ? getCategoryIdByName(activeCategoryPage) : '';
+
   /** Lista per il pager: le 10 standard + eventuali categorie aggiunte (11, 12, ...) */
   const categoryPageList = [
     ...MAIN_CATEGORIES_ORDER,
@@ -164,6 +283,10 @@ function App() {
     setActiveCategoryPage(next || '');
     setFilters((prev) => ({ ...prev, categoria: next }));
     await loadProducts({ categoria: next });
+    // "Atterraggio" automatico sulla tabella prodotti (utile quando si clicca dal dettaglio).
+    setTimeout(() => {
+      catalogTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 0);
   };
 
   const loadSupplierImports = async (supplierId) => {
@@ -240,12 +363,23 @@ function App() {
     }
   };
 
+  const loadCatalogCount = async () => {
+    try {
+      const res = await apiClient.get('/products/count');
+      const n = res?.data?.count;
+      setCatalogProductCount(typeof n === 'number' ? n : null);
+    } catch (_) {
+      setCatalogProductCount(null);
+    }
+  };
+
   const loadProducts = async (params = {}) => {
     setLoading(true);
     setError('');
     try {
       const response = await apiClient.get('/products', { params });
       setProducts(response.data);
+      loadCatalogCount();
       try {
         const canRollbackRes = await apiClient.get('/products/can-rollback-last-import');
         const val = canRollbackRes?.data;
@@ -254,7 +388,20 @@ function App() {
         setCanRollbackLastImport(false);
       }
     } catch (e) {
-      setError('Errore nel caricamento dei prodotti');
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(details ? `Errore nel caricamento dei prodotti (${details})` : 'Errore nel caricamento dei prodotti');
     } finally {
       setLoading(false);
     }
@@ -301,6 +448,16 @@ function App() {
     loadGlobalIncrease();
     loadSuppliers();
   }, []);
+
+  useEffect(() => {
+    if (!showManualProductForm) return;
+    const id = getCategoryIdByName(NEW_PRODUCTS_CATEGORY_NAME);
+    if (!id) return;
+    setManualProductForm((prev) => {
+      if (String(prev.categoriaId) === String(id)) return prev;
+      return { ...prev, categoriaId: String(id) };
+    });
+  }, [showManualProductForm, categories]);
 
   useEffect(() => {
     if (selectedSupplierId) {
@@ -508,7 +665,17 @@ function App() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('tipo', 'PRODOTTI');
-      await apiClient.post(`/suppliers/${supplierId}/imports`, formData, { signal: controller.signal });
+      const res = await apiClient.post(`/suppliers/${supplierId}/imports`, formData, { signal: controller.signal });
+      const createdLog = res?.data;
+      if (createdLog?.id) {
+        // Aggiorna subito la lista: evita casi in cui lo storico non si aggiorna/visualizza subito
+        setSupplierImports((prev) => {
+          const list = Array.isArray(prev) ? prev : [];
+          const filtered = list.filter((l) => String(l?.id) !== String(createdLog.id));
+          return [createdLog, ...filtered];
+        });
+        setActiveNav('fornitore-imports');
+      }
       await loadProducts();
       await loadSupplierImports(supplierId);
       await refreshCanRollback();
@@ -629,6 +796,45 @@ function App() {
     } finally {
       abortControllerRef.current = null;
       setUploading(false);
+    }
+  };
+
+  const handleRollbackLastImport = async () => {
+    if (!canRollbackLastImport) return;
+    if (!window.confirm('Annullare l\'ultimo import applicato? I prodotti verranno ripristinati allo stato precedente.')) {
+      return;
+    }
+    setSavingProduct(true);
+    setError('');
+    setShowRollbackSelectModal(false);
+    try {
+      await apiClient.post('/products/rollback-last-import');
+      await loadProducts();
+      if (selectedSupplierId) {
+        await loadSupplierImports(selectedSupplierId);
+      }
+      await refreshCanRollback();
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore durante il rollback dell'ultimo import (${details})`
+          : 'Errore durante il rollback dell\'ultimo import'
+      );
+    } finally {
+      setSavingProduct(false);
     }
   };
 
@@ -916,28 +1122,81 @@ function App() {
   };
 
   const handleExportMagento = async () => {
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setSyncingMagento(true);
     setError('');
     try {
-      const response = await apiClient.post('/products/export/magento');
+      const response = await apiClient.post('/products/export/magento', null, { signal: controller.signal });
       const d = response.data;
       const created = d.created ?? 0;
       const updated = d.updated ?? 0;
       const skipped = d.skipped ?? 0;
+      const imagesUploaded = d.imagesUploaded ?? 0;
       const errs = d.errorsBySku ?? {};
       const errCount = Object.keys(errs).length;
-      let msg = `Magento: ${created} creati, ${updated} aggiornati, ${skipped} saltati`;
+      let msg = `Magento: ${created} creati, ${updated} aggiornati, ${skipped} saltati, ${imagesUploaded} immagini caricate`;
       if (errCount > 0) {
         msg += `, ${errCount} errori (vedi console)`;
         console.warn('Errori Magento per SKU:', errs);
       }
       alert(msg);
     } catch (e) {
+      if (e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') {
+        setCancelMessage();
+        return;
+      }
       const data = e?.response?.data;
       const errMsg = data?.error ?? data?.hint ?? e?.message ?? 'Errore durante l\'esportazione su Magento';
       setError(errMsg);
     } finally {
+      abortControllerRef.current = null;
       setSyncingMagento(false);
+    }
+  };
+
+  const handleSyncMagentoCategories = async () => {
+    if (
+      !window.confirm(
+        'Aggiornare le categorie su Magento in base al catalogo virtuale?\n\n' +
+          'Per ogni prodotto già presente su Magento: rimuove le assegnazioni alle categorie mappate non corrette e assegna la categoria corrispondente a quella attuale nel gestionale.\n' +
+          'Non crea prodotti né modifica prezzi o descrizioni.'
+      )
+    ) {
+      return;
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    setSyncingMagentoCategories(true);
+    setError('');
+    try {
+      const response = await apiClient.post('/products/export/magento/categories', null, { signal: controller.signal });
+      const d = response.data;
+      const updated = d.updated ?? 0;
+      const unchanged = d.unchanged ?? 0;
+      const skipSku = d.skippedNoSku ?? 0;
+      const skipM = d.skippedNotOnMagento ?? 0;
+      const errs = d.errorsBySku ?? {};
+      const errCount = Object.keys(errs).length;
+      let msg = `Magento categorie: ${updated} aggiornati, ${unchanged} già allineati`;
+      msg += `; ${skipM} non presenti su Magento, ${skipSku} senza SKU`;
+      if (errCount > 0) {
+        msg += `, ${errCount} errori (vedi console)`;
+        console.warn('Errori sync categorie Magento:', errs);
+      }
+      alert(msg);
+    } catch (e) {
+      if (e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') {
+        setCancelMessage();
+        return;
+      }
+      const data = e?.response?.data;
+      const errMsg =
+        data?.error ?? data?.hint ?? e?.message ?? 'Errore aggiornamento categorie Magento';
+      setError(errMsg);
+    } finally {
+      abortControllerRef.current = null;
+      setSyncingMagentoCategories(false);
     }
   };
 
@@ -1019,6 +1278,137 @@ function App() {
       ...prev,
       [name]: value,
     }));
+  };
+
+  const handleManualProductFormChange = (e) => {
+    const { name, value } = e.target;
+    setManualProductForm((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
+  };
+
+  const handleToggleManualProductForm = () => {
+    setSelectedProduct(null);
+    setShowManualProductForm((v) => {
+      const next = !v;
+      const fallbackCategoryName = activeCategoryPage || NEW_PRODUCTS_CATEGORY_NAME;
+      const forcedId = getCategoryIdByName(fallbackCategoryName);
+      if (next && forcedId) {
+        setManualProductForm((prev) => ({ ...prev, categoriaId: String(forcedId) }));
+      }
+      return next;
+    });
+  };
+
+  const handleOpenManualProductFormForCategory = async (categoryName) => {
+    setSelectedProduct(null);
+    setShowManualProductForm(true);
+    const id = getCategoryIdByName(categoryName);
+    if (id) {
+      setManualProductForm((prev) => ({ ...prev, categoriaId: String(id) }));
+    }
+  };
+
+  const handleManualProductCreate = async (e) => {
+    e.preventDefault();
+    if (creatingProduct) return;
+    setCreatingProduct(true);
+    setError('');
+    try {
+      const sku = String(manualProductForm.sku ?? '').trim();
+      const nome = String(manualProductForm.nome ?? '').trim();
+      if (!sku || !nome) {
+        setError('SKU e Nome sono obbligatori per creare un prodotto manualmente.');
+        return;
+      }
+      if (sku.toUpperCase().startsWith('EAN-')) {
+        setError('SKU non valido: non usare prefissi "EAN-". Inserisci uno SKU reale.');
+        return;
+      }
+
+      const parsePrezzo = (v) => {
+        if (v === '' || v == null || v === undefined) return null;
+        const s = String(v).trim().replace(',', '.');
+        if (!s) return null;
+        const n = parseFloat(s);
+        return Number.isNaN(n) ? null : n;
+      };
+
+      const prezzoBaseVal = parsePrezzo(manualProductForm.prezzoBase);
+      const aumentoVal = (() => {
+        if (manualProductForm.aumentoPercentuale === '' || manualProductForm.aumentoPercentuale == null) return null;
+        const n = Number(manualProductForm.aumentoPercentuale);
+        return Number.isNaN(n) ? null : n;
+      })();
+
+      const categoriaIdNum = manualProductForm.categoriaId ? Number(manualProductForm.categoriaId) : null;
+
+      const payload = {
+        sku,
+        nome,
+        descrizione: String(manualProductForm.descrizione ?? '').trim() || null,
+        disponibilita: String(manualProductForm.disponibilita ?? '').trim() || null,
+        ean: String(manualProductForm.ean ?? '').trim() || null,
+        marca: String(manualProductForm.marca ?? '').trim() || null,
+        codiceProduttore: String(manualProductForm.codiceProduttore ?? '').trim() || null,
+        prezzoBase: prezzoBaseVal,
+        aumentoPercentuale: aumentoVal,
+        categoria: categoriaIdNum && !Number.isNaN(categoriaIdNum) ? { id: categoriaIdNum } : null,
+      };
+
+      const response = await apiClient.post('/products', payload);
+      const created = response.data;
+
+      // Il backend imposta un flag per far comparire il prodotto anche in "Nuovi prodotti",
+      // quindi mostriamo subito la pagina coerente in UI.
+      await loadCategories();
+      await applyCategoryPage(NEW_PRODUCTS_CATEGORY_NAME);
+      setSelectedProduct(created);
+      setShowManualProductForm(false);
+
+      const spb = created.prezzoBase;
+      setProductForm({
+        nome: created.nome || '',
+        descrizione: created.descrizione || '',
+        marca: created.marca || '',
+        codiceProduttore: created.codiceProduttore || '',
+        prezzoBase: spb != null && spb !== '' ? String(spb) : '',
+        aumentoPercentuale: created.aumentoPercentuale ?? '',
+        categoriaId: created.categoria ? created.categoria.id : '',
+        disponibilita: created.disponibilita ?? '',
+        ean: formatEan(created) !== 'EAN non disponibile' ? (created.ean || '') : '',
+      });
+
+      // Manteniamo la categoria attiva per creare velocemente altri prodotti.
+      setManualProductForm((prev) => ({
+        ...prev,
+        sku: '',
+        nome: '',
+        descrizione: '',
+        disponibilita: '',
+        ean: '',
+        marca: '',
+        codiceProduttore: '',
+        prezzoBase: '',
+        aumentoPercentuale: '',
+        categoriaId: created.categoria ? String(created.categoria.id) : prev.categoriaId,
+      }));
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) || data?.message || data?.error || data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(details ? `Errore nella creazione del prodotto (${details})` : 'Errore nella creazione del prodotto');
+    } finally {
+      setCreatingProduct(false);
+    }
   };
 
   const handleProductSave = async (e) => {
@@ -1103,6 +1493,108 @@ function App() {
     }
   };
 
+  const handleInlineCategoryChange = async (product, nextCategoriaIdRaw, useProductFormValues = false) => {
+    if (!product?.id) return;
+    if (savingProductRef.current) return;
+
+    const isCurrentSelected = selectedProduct?.id != null && String(selectedProduct.id) === String(product.id);
+
+    const nextCategoriaId =
+      nextCategoriaIdRaw != null && String(nextCategoriaIdRaw) !== ''
+        ? Number(nextCategoriaIdRaw)
+        : null;
+    const nextCategoriaIdSafe =
+      nextCategoriaId != null && Number.isNaN(nextCategoriaId) ? null : nextCategoriaId;
+
+    savingProductRef.current = true;
+    setSavingProduct(true);
+    setError('');
+    try {
+      // In `ProductUpdateRequest` i campi vengono applicati così come arrivano:
+      // per non azzerare valori, inviamo anche i dati già presenti (da `product` o da `productForm` se stiamo editando).
+      const source = useProductFormValues ? productForm : product;
+      const emptyToNull = (v) => (v === '' || v == null ? null : v);
+      const parsePercentOrNull = (v) => {
+        if (v == null || v === '') return null;
+        if (typeof v === 'number') return v;
+        const n = Number(v);
+        return Number.isNaN(n) ? null : n;
+      };
+      const payload = {
+        nome: emptyToNull(source.nome),
+        descrizione: emptyToNull(source.descrizione),
+        disponibilita: emptyToNull(source.disponibilita),
+        ean: emptyToNull(source.ean),
+        marca: emptyToNull(source.marca),
+        codiceProduttore: emptyToNull(source.codiceProduttore),
+        prezzoBase: emptyToNull(source.prezzoBase),
+        aumentoPercentuale: parsePercentOrNull(source.aumentoPercentuale),
+        categoriaId: nextCategoriaIdSafe,
+      };
+
+      const response = await apiClient.put(`/products/${product.id}`, payload);
+      const savedProduct = response.data;
+
+      const categoryChanged =
+        (savedProduct.categoria?.id ?? null) !== (product.categoria?.id ?? null);
+
+      setSelectedProduct((prev) => (prev?.id === product.id ? savedProduct : prev));
+
+      if (isCurrentSelected) {
+        const spb = savedProduct.prezzoBase;
+        setProductForm({
+          nome: savedProduct.nome || '',
+          descrizione: savedProduct.descrizione || '',
+          marca: savedProduct.marca || '',
+          codiceProduttore: savedProduct.codiceProduttore || '',
+          prezzoBase: spb != null && spb !== '' ? String(spb) : '',
+          aumentoPercentuale: savedProduct.aumentoPercentuale ?? '',
+          categoriaId: savedProduct.categoria ? savedProduct.categoria.id : '',
+          disponibilita: savedProduct.disponibilita ?? '',
+          ean: savedProduct.ean ?? '',
+        });
+      }
+
+      const params = {};
+      if (filters.nome) params.nome = filters.nome;
+      if (filters.sku) params.sku = filters.sku;
+      if (filters.ean) params.ean = filters.ean;
+      if (filters.fornitore) params.fornitore = filters.fornitore;
+
+      if (categoryChanged) {
+        const newCategoryName = savedProduct.categoria?.nome || '';
+        if (newCategoryName) {
+          params.categoria = newCategoryName;
+          setActiveCategoryPage(newCategoryName);
+          setFilters((prev) => ({ ...prev, categoria: newCategoryName }));
+        } else {
+          // Categoria vuota: atterriamo su "Tutte" (nessun filtro categoria).
+          setActiveCategoryPage('');
+          setFilters((prev) => ({ ...prev, categoria: '' }));
+        }
+      } else if (filters.categoria || activeCategoryPage) {
+        params.categoria = filters.categoria || activeCategoryPage;
+      }
+
+      await loadProducts(params);
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) || data?.message || data?.error || data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(details ? `Errore nel cambio categoria (${details})` : 'Errore nel cambio categoria');
+    } finally {
+      savingProductRef.current = false;
+      setSavingProduct(false);
+    }
+  };
+
   const handleProductDelete = async (productId) => {
     if (!productId) return;
     if (!window.confirm('Vuoi cancellare questo prodotto dal catalogo?')) {
@@ -1113,7 +1605,10 @@ function App() {
     try {
       await apiClient.delete(`/products/${productId}`);
       setSelectedProduct(null);
-      await loadProducts();
+      // Manteniamo la stessa categoria attiva: dopo delete non vogliamo tornare su "Tutte".
+      const params = {};
+      if (filters.categoria) params.categoria = filters.categoria;
+      await loadProducts(params);
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data;
@@ -1283,7 +1778,7 @@ function App() {
   const handleCatalogReset = async () => {
     if (
       !window.confirm(
-        'ATTENZIONE: verranno cancellati tutti i prodotti (le categorie restano). Vuoi continuare?'
+        'ATTENZIONE: verranno cancellati tutti i prodotti tranne quelli in "Nuovi prodotti" (le categorie restano). Vuoi continuare?'
       )
     ) {
       return;
@@ -1291,11 +1786,9 @@ function App() {
     setSavingProduct(true);
     setError('');
     try {
+      // Passo critico: reset del catalogo
       await apiClient.delete('/products/reset');
       setSelectedProduct(null);
-      setSupplierImports([]);
-      await loadProducts();
-      await loadCategories();
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data;
@@ -1315,6 +1808,37 @@ function App() {
           ? `Errore nel reset del catalogo (${details})`
           : 'Errore nel reset del catalogo'
       );
+      setSavingProduct(false);
+      return;
+    }
+
+    // Se il reset è andato a buon fine, eventuali errori nel ricarico non devono far pensare che il reset sia fallito
+    try {
+      await loadProducts();
+      await loadCategories();
+
+      // Se la modale di rollback era aperta, dopo reset deve sparire qualsiasi lista vecchia.
+      setShowRollbackSelectModal(false);
+      setAppliedImportsForRollback([]);
+      setLoadingAppliedImportsForRollback(false);
+    } catch (e) {
+      // Mostriamo al massimo un errore soft di ricaricamento
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      if (details) {
+        setError(`Reset completato, ma errore nel ricaricare i dati (${details})`);
+      }
     } finally {
       setSavingProduct(false);
     }
@@ -1685,10 +2209,17 @@ function App() {
       </header>
 
       <main className="app-main">
-        {(uploading || syncingIcecat) && (
+        {(uploading || syncingIcecat || syncingMagento || syncingMagentoCategories) && (
           <div className="alert alert-info" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
             <span>
-              {uploading ? 'Import in corso...' : 'Sincronizzazione Icecat in corso...'} attendere il completamento.
+              {uploading
+                ? 'Import in corso...'
+                : syncingIcecat
+                  ? 'Sincronizzazione Icecat in corso...'
+                  : syncingMagentoCategories
+                    ? 'Aggiornamento categorie Magento in corso...'
+                    : 'Sincronizzazione Magento in corso...'}{' '}
+              attendere il completamento.
             </span>
             <button
               type="button"
@@ -1708,7 +2239,7 @@ function App() {
             className={activeNav === 'catalogo' ? 'app-nav-active' : ''}
             onClick={() => handleNavClick('catalogo')}
           >
-            Catalogo virtuale
+            Catalogo virtuale{catalogProductCount != null ? ` (${catalogProductCount.toLocaleString('it-IT')})` : ''}
           </button>
           <button
             type="button"
@@ -1734,44 +2265,16 @@ function App() {
           <>
             <section className="card">
               <h2>Catalogo virtuale</h2>
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '0.5rem',
-                  marginTop: '0.5rem',
-                  marginBottom: '0.75rem',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: '0.5rem',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                  }}
-                >
-                  <p className="muted" style={{ margin: 0, flex: 1 }}>
-                    Trasferisci il catalogo virtuale verso l’integrazione Magento / Bitplanet utilizzando
-                    l’endpoint di esportazione JSON del backend.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={handleExportToBitplanet}
-                    disabled={exportingToBitplanet || uploading}
-                  >
-                    {exportingToBitplanet
-                      ? 'Trasferimento su Bitplanet in corso...'
-                      : 'Trasferisci catalogo su Bitplanet'}
-                  </button>
+              {catalogProductCount != null && (
+                <p className="muted" style={{ margin: '0.25rem 0 0 0', fontSize: '0.95rem' }}>
+                  Prodotti nel catalogo: <strong>{catalogProductCount.toLocaleString('it-IT')}</strong>
+                </p>
+              )}
+              {bitplanetMessage && (
+                <div className="alert alert-info" style={{ margin: '0.5rem 0 0.75rem 0' }}>
+                  {bitplanetMessage}
                 </div>
-                {bitplanetMessage && (
-                  <div className="alert alert-info" style={{ margin: 0 }}>
-                    {bitplanetMessage}
-                  </div>
-                )}
-              </div>
+              )}
 
               <div className="category-pager">
                 <div className="category-pager-header">
@@ -1827,6 +2330,21 @@ function App() {
                       <div key={cat} className="category-legend-item">
                         <span className="category-legend-num">{idx + 1}</span>
                         <span className="category-legend-name">{cat}</span>
+                        {catId != null && (
+                          <button
+                            type="button"
+                            className="category-add-product-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenManualProductFormForCategory(cat);
+                            }}
+                            disabled={uploading || creatingProduct || deletingCategoryId != null}
+                            title={`Aggiungi prodotto manualmente a "${cat}"`}
+                            aria-label={`Aggiungi prodotto manualmente a "${cat}"`}
+                          >
+                            +
+                          </button>
+                        )}
                         {catId != null && (
                           <button
                             type="button"
@@ -1971,6 +2489,17 @@ function App() {
                           <> · Disponibilità (CS): <strong>{selectedProduct.disponibilita}</strong></>
                         )}
                       </p>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '0.5rem 0 0.25rem 0' }}>
+                        <button
+                          type="button"
+                          className=""
+                          onClick={() => handleToggleOfferForSelectedProduct(selectedProduct)}
+                          disabled={uploading || loading || togglingOffer}
+                          title="Assegna o rimuovi questo prodotto dalle offerte"
+                        >
+                          {isProductInOffer(selectedProduct) ? 'Togli dalle offerte ✓' : 'Metti in offerte'}
+                        </button>
+                      </div>
                       <form className="product-form" onSubmit={handleProductSave}>
                         <label>Nome <input type="text" name="nome" value={productForm.nome} onChange={handleProductFormChange} /></label>
                         <label>Descrizione <textarea name="descrizione" rows="3" value={productForm.descrizione} onChange={handleProductFormChange} /></label>
@@ -1980,7 +2509,22 @@ function App() {
                         <label>Codice produttore <input type="text" name="codiceProduttore" placeholder="Es. GS-25U3 (per fallback Icecat)" value={productForm.codiceProduttore} onChange={handleProductFormChange} /></label>
                         <label>Prezzo base <input type="number" step="0.01" name="prezzoBase" value={productForm.prezzoBase ?? ''} onChange={handleProductFormChange} /></label>
                         <label>Aumento specifico prodotto (%) <input type="number" step="0.01" name="aumentoPercentuale" value={productForm.aumentoPercentuale} onChange={handleProductFormChange} /></label>
-                        <label>Categoria <select name="categoriaId" value={productForm.categoriaId} onChange={handleProductFormChange}><option value="">Nessuna</option>{sortedCategories.map((c) => (<option key={c.id} value={c.id}>{c.nome}</option>))}</select></label>
+                        <label>
+                          Categoria
+                          <select
+                            className="catalog-category-select"
+                            name="categoriaId"
+                            value={productForm.categoriaId}
+                            onChange={handleProductFormChange}
+                          >
+                            <option value="">Nessuna</option>
+                            {sortedCategories.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.nome}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
                         <div className="product-form-actions"><button type="submit" disabled={savingProduct}>{savingProduct ? 'Salvataggio...' : 'Salva modifiche'}</button></div>
                       </form>
                       <div className="product-documents">
@@ -2019,7 +2563,7 @@ function App() {
                   </div>
                 ) : (
                 <div className={`products-layout ${catalogFullscreen ? 'products-layout-fullscreen-only' : ''}`}>
-                <div className="table-wrapper">
+                <div className="table-wrapper" ref={catalogTableRef}>
                   <div className="catalog-category-indicator" aria-live="polite">
                     Categoria: <strong>{activeCategoryPage || 'Tutte'}</strong>
                   </div>
@@ -2166,10 +2710,135 @@ function App() {
                 <div className="product-detail">
                   <h3>Dettaglio / modifica prodotto</h3>
                   {!selectedProduct && (
-                    <p className="muted">
-                      Seleziona una riga dalla tabella per modificare il
-                      prodotto.
-                    </p>
+                    <>
+                      <p className="muted">
+                        Seleziona una riga dalla tabella per modificare il prodotto oppure aggiungine uno manualmente.
+                      </p>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '0.5rem 0 0.25rem 0' }}>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={handleToggleManualProductForm}
+                          disabled={uploading || loading || creatingProduct}
+                          title="Apri / chiudi il form di creazione prodotto manuale"
+                        >
+                          {showManualProductForm ? 'Chiudi form' : '＋ Aggiungi prodotto manualmente'}
+                        </button>
+                      </div>
+                      {showManualProductForm && (
+                        <form className="product-form" onSubmit={handleManualProductCreate}>
+                          <label>
+                            SKU (obbligatorio)
+                            <input
+                              type="text"
+                              name="sku"
+                              value={manualProductForm.sku}
+                              onChange={handleManualProductFormChange}
+                              placeholder="Es. GS-25U3"
+                            />
+                          </label>
+                          <label>
+                            Nome (obbligatorio)
+                            <input
+                              type="text"
+                              name="nome"
+                              value={manualProductForm.nome}
+                              onChange={handleManualProductFormChange}
+                              placeholder="Nome prodotto"
+                            />
+                          </label>
+                          <label>
+                            Descrizione
+                            <textarea
+                              name="descrizione"
+                              rows="3"
+                              value={manualProductForm.descrizione}
+                              onChange={handleManualProductFormChange}
+                            />
+                          </label>
+                          <label>
+                            Disponibilità (CS)
+                            <input
+                              type="text"
+                              name="disponibilita"
+                              placeholder="Es. 10, 5+"
+                              value={manualProductForm.disponibilita}
+                              onChange={handleManualProductFormChange}
+                            />
+                          </label>
+                          <label>
+                            EAN
+                            <input
+                              type="text"
+                              name="ean"
+                              placeholder="Es. 8057284620150 (per Icecat)"
+                              value={manualProductForm.ean}
+                              onChange={handleManualProductFormChange}
+                            />
+                          </label>
+                          <label>
+                            Marca
+                            <input
+                              type="text"
+                              name="marca"
+                              placeholder="Es. VULTECH (per fallback Icecat)"
+                              value={manualProductForm.marca}
+                              onChange={handleManualProductFormChange}
+                            />
+                          </label>
+                          <label>
+                            Codice produttore
+                            <input
+                              type="text"
+                              name="codiceProduttore"
+                              placeholder="Es. GS-25U3 (per fallback Icecat)"
+                              value={manualProductForm.codiceProduttore}
+                              onChange={handleManualProductFormChange}
+                            />
+                          </label>
+                          <label>
+                            Prezzo base
+                            <input
+                              type="number"
+                              step="0.01"
+                              name="prezzoBase"
+                              value={manualProductForm.prezzoBase ?? ''}
+                              onChange={handleManualProductFormChange}
+                            />
+                          </label>
+                          <label>
+                            Aumento specifico prodotto (%)
+                            <input
+                              type="number"
+                              step="0.01"
+                              name="aumentoPercentuale"
+                              value={manualProductForm.aumentoPercentuale ?? ''}
+                              onChange={handleManualProductFormChange}
+                            />
+                          </label>
+                          <label>
+                            Categoria
+                            <select
+                              name="categoriaId"
+                              value={manualProductForm.categoriaId}
+                              onChange={handleManualProductFormChange}
+                            >
+                              <option value="">Nessuna</option>
+                              {sortedCategories.map((c) => (
+                                <option key={c.id} value={String(c.id)}>
+                                  {c.nome}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="product-form-actions">
+                            <button type="submit" disabled={creatingProduct}>
+                              {creatingProduct ? 'Creazione...' : 'Crea prodotto'}
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </>
                   )}
                   {selectedProduct && (
                     <>
@@ -2188,6 +2857,17 @@ function App() {
                           <> · Disponibilità (CS): <strong>{selectedProduct.disponibilita}</strong></>
                         )}
                       </p>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '0.5rem 0 0.25rem 0' }}>
+                        <button
+                          type="button"
+                          className=""
+                          onClick={() => handleToggleOfferForSelectedProduct(selectedProduct)}
+                          disabled={uploading || loading || togglingOffer}
+                          title="Assegna o rimuovi questo prodotto dalle offerte"
+                        >
+                          {isProductInOffer(selectedProduct) ? 'Togli dalle offerte ✓' : 'Metti in offerte'}
+                        </button>
+                      </div>
                       <form className="product-form" onSubmit={handleProductSave}>
                         <label>
                           Nome
@@ -2270,6 +2950,7 @@ function App() {
                         <label>
                           Categoria
                           <select
+                            className="catalog-category-select"
                             name="categoriaId"
                             value={productForm.categoriaId}
                             onChange={handleProductFormChange}
@@ -2419,9 +3100,20 @@ function App() {
                   className="icon-button icon-button-secondary"
                   title="Sincronizza l'intero catalogo su Magento via REST API"
                   onClick={handleExportMagento}
-                  disabled={syncingMagento}
+                  disabled={syncingMagento || syncingMagentoCategories}
                 >
                   {syncingMagento ? 'Sincronizzazione Magento...' : '📤 Esporta su Magento'}
+                </button>
+                <button
+                  type="button"
+                  className="icon-button icon-button-secondary"
+                  title="Dopo aver spostato prodotti tra categorie nel catalogo virtuale, allinea le categorie su Magento (solo prodotti già esistenti)"
+                  onClick={handleSyncMagentoCategories}
+                  disabled={syncingMagento || syncingMagentoCategories}
+                >
+                  {syncingMagentoCategories
+                    ? 'Categorie Magento...'
+                    : '📁 Solo categorie Magento'}
                 </button>
                 <button
                   type="button"
