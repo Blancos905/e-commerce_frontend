@@ -6,6 +6,97 @@ import apiClient from './apiClient';
 const API_BASE = apiClient.defaults.baseURL || 'http://localhost:8083/api';
 const API_ORIGIN = API_BASE.replace(/\/api\/?$/, '') || 'http://localhost:8083';
 
+// Credenziali statiche per accesso pannello admin (pagina login frontend).
+const LOGIN_USERNAME = 'bitplanet1234';
+const LOGIN_PASSWORD = 'bitplanet';
+const AUTH_STORAGE_KEY = 'ecommerce_logged_in';
+
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (submitting) return;
+
+    setSubmitting(true);
+    setError('');
+    try {
+      const ok = onLogin(username, password);
+      if (!ok) {
+        setError('Credenziali non valide.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="App login-page">
+      <div className="login-bg-orb login-bg-orb-left" />
+      <div className="login-bg-orb login-bg-orb-right" />
+      <div className="card login-card">
+        <div className="login-brand-row">
+          <div className="logo-block">
+            <img
+              src={process.env.PUBLIC_URL + '/logo.png'}
+              alt="Hydra Solutions"
+              className="app-logo"
+            />
+          </div>
+          <img
+            src={process.env.PUBLIC_URL + '/logo%20160x160.webp'}
+            alt="Logo"
+            className="app-logo-160"
+            style={{ width: '72px', height: '72px', objectFit: 'contain' }}
+          />
+        </div>
+        <h2 className="login-title">Login</h2>
+        <p className="login-subtitle">Accedi al pannello di gestione catalogo</p>
+        <form onSubmit={handleSubmit} className="product-form login-form">
+          <label>
+            Utente
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              placeholder="Inserisci username"
+              disabled={submitting}
+              required
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              placeholder="Inserisci password"
+              disabled={submitting}
+              required
+            />
+          </label>
+
+          {error && <div className="error">{error}</div>}
+
+          <div className="product-form-actions login-actions">
+            <button type="submit" className="login-submit-btn" disabled={submitting}>
+              {submitting ? 'Accesso...' : 'Accedi'}
+            </button>
+          </div>
+        </form>
+        <p className="muted login-hint">
+          Inserisci le tue credenziali per accedere.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const OFFERTA_CATEGORY_NAME = 'In offerta';
   const NEW_PRODUCTS_CATEGORY_NAME = 'Nuovi prodotti';
@@ -24,10 +115,15 @@ function App() {
     'Videosorveglianza',
   ];
 
+  const [authOk, setAuthOk] = useState(() => localStorage.getItem(AUTH_STORAGE_KEY) === '1');
+
   const [products, setProducts] = useState([]);
+  const [deletedProducts, setDeletedProducts] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [categoryCounts, setCategoryCounts] = useState({});
   const [suppliers, setSuppliers] = useState([]);
   const [filters, setFilters] = useState({ nome: '', sku: '', ean: '', categoria: '', fornitore: '' });
+  const [trashFilters, setTrashFilters] = useState({ nome: '', sku: '', ean: '', categoria: '', fornitore: '' });
   const [globalIncrease, setGlobalIncrease] = useState('');
   const [activeNav, setActiveNav] = useState('catalogo');
   const [selectedSupplierId, setSelectedSupplierId] = useState('');
@@ -46,6 +142,7 @@ function App() {
   const [newSupplierName, setNewSupplierName] = useState('');
   const [newSupplierCode, setNewSupplierCode] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingDeletedProducts, setLoadingDeletedProducts] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [savingProduct, setSavingProduct] = useState(false);
   const [creatingProduct, setCreatingProduct] = useState(false);
@@ -59,6 +156,10 @@ function App() {
   const [supplierImports, setSupplierImports] = useState([]);
   const [loadingSupplierImports, setLoadingSupplierImports] = useState(false);
   const [supplierImportsError, setSupplierImportsError] = useState('');
+  const [csvCompareLeftId, setCsvCompareLeftId] = useState('');
+  const [csvCompareRightId, setCsvCompareRightId] = useState('');
+  const [csvCompareLoading, setCsvCompareLoading] = useState(false);
+  const [csvCompareResult, setCsvCompareResult] = useState(null);
   const [csvPreviewName, setCsvPreviewName] = useState('');
   const [csvPreviewText, setCsvPreviewText] = useState('');
   const [pendingImport, setPendingImport] = useState(null);
@@ -71,7 +172,14 @@ function App() {
   const [loadingAppliedImportsForRollback, setLoadingAppliedImportsForRollback] = useState(false);
   const [syncingIcecat, setSyncingIcecat] = useState(false);
   const [syncingMagento, setSyncingMagento] = useState(false);
+  const [syncingMagentoSingle, setSyncingMagentoSingle] = useState(false);
   const [syncingMagentoCategories, setSyncingMagentoCategories] = useState(false);
+  const [syncingMagentoCurrentCategory, setSyncingMagentoCurrentCategory] = useState(false);
+  const [showMagentoCategoryModal, setShowMagentoCategoryModal] = useState(false);
+  const [selectedMagentoCategoryId, setSelectedMagentoCategoryId] = useState('');
+  const [showEmptyCategoryModal, setShowEmptyCategoryModal] = useState(false);
+  const [selectedEmptyCategoryId, setSelectedEmptyCategoryId] = useState('');
+  const [emptyingCategory, setEmptyingCategory] = useState(false);
   const [showRevisionsModal, setShowRevisionsModal] = useState(false);
   const [allProductRevisions, setAllProductRevisions] = useState([]);
   const [loadingAllRevisions, setLoadingAllRevisions] = useState(false);
@@ -151,6 +259,7 @@ function App() {
 
   const isProductInOffer = (p) => {
     if (!p) return false;
+    if (p.inOfferta === true) return true;
     const nomeCat = p.categoria?.nome;
     return (
       nomeCat != null &&
@@ -184,13 +293,14 @@ function App() {
     setError('');
     try {
       const inOffer = isProductInOffer(product);
-      const offerCategory = inOffer ? null : await ensureOfferCategory();
-      if (!inOffer && !offerCategory?.id) {
-        throw new Error('Categoria "In offerta" non disponibile.');
+      // Mantieni la categoria principale invariata: "In offerta" e' un flag separato.
+      // Se la categoria virtuale non esiste nella UI la creiamo per poter navigare la pagina.
+      if (!inOffer) {
+        await ensureOfferCategory();
       }
 
-      // In backend l'update del prodotto sovrascrive anche i campi (nome/descrizione/prezzi),
-      // quindi per "toggle offerta" dobbiamo rispedire tutti i valori attuali e cambiare solo la categoria.
+      // In backend l'update del prodotto sovrascrive i campi, quindi rispediamo i valori correnti
+      // e cambiamo solo il flag inOfferta.
       const payload = {
         nome: product.nome,
         descrizione: product.descrizione,
@@ -200,7 +310,8 @@ function App() {
         codiceProduttore: product.codiceProduttore ?? null,
         prezzoBase: product.prezzoBase ?? null,
         aumentoPercentuale: product.aumentoPercentuale ?? null,
-        categoriaId: inOffer ? null : offerCategory.id,
+        categoriaId: product.categoria?.id ?? null,
+        inOfferta: !inOffer,
       };
 
       await apiClient.put(`/products/${product.id}`, payload);
@@ -268,6 +379,53 @@ function App() {
   });
 
   const activeCategoryId = activeCategoryPage ? getCategoryIdByName(activeCategoryPage) : '';
+  const isOffertaContext = (() => {
+    const current = String(filters.categoria || activeCategoryPage || '').trim().toLowerCase();
+    return current === String(OFFERTA_CATEGORY_NAME).trim().toLowerCase();
+  })();
+
+  const getDisplayedBasePrice = (p) => {
+    if (isOffertaContext && p?.prezzoOfferta != null) return p.prezzoOfferta;
+    return p?.prezzoBase;
+  };
+  // Prezzo finale "base" calcolato on-the-fly (uguale formula backend),
+  // usato per non far cambiare i prezzi mostrati nelle categorie principali
+  // quando un prodotto è marcato anche come "In offerta".
+  const computeBaseFinalPriceForDisplay = (p) => {
+    const baseRaw = p?.prezzoBase;
+    if (baseRaw == null || baseRaw === '') return null;
+    const base = typeof baseRaw === 'number' ? baseRaw : Number(baseRaw);
+    if (Number.isNaN(base)) return null;
+
+    const rincaro = getRincaroApplicato(p);
+    if (rincaro == null || Number.isNaN(Number(rincaro))) return base;
+    const r = Number(rincaro);
+    return base * (1 + r / 100);
+  };
+  const csvComparePriceStats = (() => {
+    const diffs = Array.isArray(csvCompareResult?.priceDifferences) ? csvCompareResult.priceDifferences : [];
+    let lower = 0;
+    let higher = 0;
+    let unchanged = 0;
+    diffs.forEach((d) => {
+      const dir = String(d?.direction ?? '').trim().toUpperCase();
+      if (dir === 'DIMINUITO') lower += 1;
+      else if (dir === 'AUMENTATO') higher += 1;
+      else unchanged += 1;
+    });
+    return { lower, higher, unchanged, total: diffs.length };
+  })();
+  const normalizeText = (v) => String(v ?? '').trim().toLowerCase();
+  const filteredDeletedProducts = deletedProducts.filter((p) => {
+    const nomeOk = !trashFilters.nome || normalizeText(p?.nome).includes(normalizeText(trashFilters.nome));
+    const skuOk = !trashFilters.sku || normalizeText(p?.sku).includes(normalizeText(trashFilters.sku));
+    const eanOk = !trashFilters.ean || normalizeText(p?.ean).includes(normalizeText(trashFilters.ean));
+    const categoriaOk =
+      !trashFilters.categoria || normalizeText(p?.categoria?.nome).includes(normalizeText(trashFilters.categoria));
+    const fornitoreOk =
+      !trashFilters.fornitore || normalizeText(p?.fornitore?.nome).includes(normalizeText(trashFilters.fornitore));
+    return nomeOk && skuOk && eanOk && categoriaOk && fornitoreOk;
+  });
 
   /** Lista per il pager: le 10 standard + eventuali categorie aggiunte (11, 12, ...) */
   const categoryPageList = [
@@ -281,7 +439,16 @@ function App() {
     const next = categoryName || '';
     setActiveNav('catalogo');
     setActiveCategoryPage(next || '');
-    setFilters((prev) => ({ ...prev, categoria: next }));
+    // Pager = vista per categoria; il campo filtro "Categoria" resta separato così una ricerca per
+    // nome/SKU non resta bloccata sulla pagina (es. "Computer" mentre gli iPhone sono in "Accessori").
+    setFilters((prev) => ({
+      ...prev,
+      categoria: '',
+      nome: '',
+      sku: '',
+      ean: '',
+      fornitore: '',
+    }));
     await loadProducts({ categoria: next });
     // "Atterraggio" automatico sulla tabella prodotti (utile quando si clicca dal dettaglio).
     setTimeout(() => {
@@ -332,6 +499,90 @@ function App() {
     }
   };
 
+  const handleCompareSupplierCsv = async () => {
+    if (!selectedSupplierId) {
+      setError('Seleziona un fornitore prima di comparare i CSV.');
+      return;
+    }
+    if (!csvCompareLeftId || !csvCompareRightId) {
+      setError('Seleziona due CSV da comparare.');
+      return;
+    }
+    if (String(csvCompareLeftId) === String(csvCompareRightId)) {
+      setError('Seleziona due CSV diversi per il confronto.');
+      return;
+    }
+
+    setCsvCompareLoading(true);
+    setCsvCompareResult(null);
+    setError('');
+    try {
+      const res = await apiClient.get(`/suppliers/${selectedSupplierId}/imports/compare`, {
+        params: {
+          leftImportId: csvCompareLeftId,
+          rightImportId: csvCompareRightId,
+        },
+      });
+      setCsvCompareResult(res?.data || null);
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore durante la comparazione CSV (${details})`
+          : 'Errore durante la comparazione CSV'
+      );
+    } finally {
+      setCsvCompareLoading(false);
+    }
+  };
+
+  const handleCompareCsvWithDatabase = async (importId) => {
+    if (!selectedSupplierId || !importId) {
+      setError('Seleziona un fornitore e un CSV valido.');
+      return;
+    }
+    setCsvCompareLoading(true);
+    setCsvCompareResult(null);
+    setError('');
+    try {
+      const res = await apiClient.get(`/suppliers/${selectedSupplierId}/imports/${importId}/compare-db`);
+      setCsvCompareResult(res?.data || null);
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore durante la comparazione CSV vs database (${details})`
+          : 'Errore durante la comparazione CSV vs database'
+      );
+    } finally {
+      setCsvCompareLoading(false);
+    }
+  };
+
   const handleDeleteImportLog = async (supplierId, importId) => {
     if (!supplierId || !importId) return;
     if (!window.confirm('Vuoi cancellare questa voce dallo storico import?')) {
@@ -373,6 +624,58 @@ function App() {
     }
   };
 
+  const handleEmptyCategoryConfirm = async () => {
+    if (!selectedEmptyCategoryId) {
+      setError('Seleziona una categoria da svuotare.');
+      return;
+    }
+    const cat = categories.find((c) => String(c.id) === String(selectedEmptyCategoryId));
+    const label = cat?.nome || 'categoria selezionata';
+    if (
+      !window.confirm(
+        `Svuotare "${label}"?\n\n` +
+          '• Categoria normale: tutti i prodotti di quella categoria vanno nel cestino (recuperabili).\n' +
+          '• "In offerta": rimuove solo offerta e prezzo promozionale, senza cancellare i prodotti.\n' +
+          '• "Nuovi prodotti": rimuove solo il flag nuovi prodotti, senza cancellare.'
+      )
+    ) {
+      return;
+    }
+    setEmptyingCategory(true);
+    setError('');
+    try {
+      const res = await apiClient.post(`/categories/${selectedEmptyCategoryId}/empty-products`);
+      const data = res?.data;
+      const affected = typeof data?.affected === 'number' ? data.affected : null;
+      setShowEmptyCategoryModal(false);
+      setSelectedEmptyCategoryId('');
+      await loadProducts(buildCatalogQueryParams());
+      await loadCategories();
+      alert(
+        affected != null
+          ? `Operazione completata: ${affected} prodotti elaborati.`
+          : 'Operazione completata.'
+      );
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(details ? `Errore nello svuotamento (${details})` : 'Errore nello svuotamento della categoria');
+    } finally {
+      setEmptyingCategory(false);
+    }
+  };
+
   const loadProducts = async (params = {}) => {
     setLoading(true);
     setError('');
@@ -407,6 +710,106 @@ function App() {
     }
   };
 
+  const loadDeletedProducts = async () => {
+    setLoadingDeletedProducts(true);
+    setError('');
+    try {
+      const res = await apiClient.get('/products/deleted');
+      setDeletedProducts(Array.isArray(res.data) ? res.data : []);
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setDeletedProducts([]);
+      setError(
+        details
+          ? `Errore nel caricamento cestino (${details})`
+          : 'Errore nel caricamento cestino'
+      );
+    } finally {
+      setLoadingDeletedProducts(false);
+    }
+  };
+
+  const handleRestoreDeletedProduct = async (productId) => {
+    if (!productId) return;
+    setSavingProduct(true);
+    setError('');
+    try {
+      await apiClient.post(`/products/${productId}/restore`);
+      await loadDeletedProducts();
+      await loadProducts(buildCatalogQueryParams());
+      await loadCatalogCount();
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore nel ripristino prodotto (${details})`
+          : 'Errore nel ripristino prodotto'
+      );
+    } finally {
+      setSavingProduct(false);
+    }
+  };
+
+  const handleEmptyTrash = async () => {
+    if (!window.confirm('Svuotare il cestino? I prodotti eliminati verranno rimossi definitivamente.')) {
+      return;
+    }
+    setSavingProduct(true);
+    setError('');
+    try {
+      const res = await apiClient.delete('/products/deleted/empty');
+      const deleted = res?.data?.deleted ?? 0;
+      await loadDeletedProducts();
+      await loadCatalogCount();
+      alert(`Cestino svuotato: ${deleted} prodotti eliminati definitivamente.`);
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.message ||
+        data?.error ||
+        data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(
+        details
+          ? `Errore nello svuotamento cestino (${details})`
+          : 'Errore nello svuotamento cestino'
+      );
+    } finally {
+      setSavingProduct(false);
+    }
+  };
+
   const loadCategories = async () => {
     try {
       await apiClient.post('/categories/seed');
@@ -418,6 +821,12 @@ function App() {
       setCategories(response.data || []);
     } catch (ignored) {
       // ignore for now
+    }
+    try {
+      const countsRes = await apiClient.get('/categories/counts');
+      setCategoryCounts(countsRes?.data && typeof countsRes.data === 'object' ? countsRes.data : {});
+    } catch (_) {
+      setCategoryCounts({});
     }
   };
 
@@ -442,12 +851,13 @@ function App() {
   };
 
   useEffect(() => {
+    if (!authOk) return;
     // default: prima pagina = Computer
     applyCategoryPage('Computer');
     loadCategories();
     loadGlobalIncrease();
     loadSuppliers();
-  }, []);
+  }, [authOk]);
 
   useEffect(() => {
     if (!showManualProductForm) return;
@@ -466,6 +876,9 @@ function App() {
       setSupplierImports([]);
       setSupplierImportsError('');
     }
+    setCsvCompareLeftId('');
+    setCsvCompareRightId('');
+    setCsvCompareResult(null);
   }, [selectedSupplierId]);
 
   useEffect(() => {
@@ -486,10 +899,18 @@ function App() {
   };
 
   useEffect(() => {
+    if (!authOk) return;
     if (activeNav === 'catalogo') {
       refreshCanRollback();
     }
-  }, [activeNav]);
+  }, [activeNav, authOk]);
+
+  useEffect(() => {
+    if (!authOk) return;
+    if (activeNav === 'cestino') {
+      loadDeletedProducts();
+    }
+  }, [activeNav, authOk]);
 
   const handleExportToBitplanet = async () => {
     setExportingToBitplanet(true);
@@ -536,15 +957,32 @@ function App() {
     setFilters((prev) => ({ ...prev, [name]: value }));
   };
 
+  /**
+   * Query verso GET /products: con Nome/SKU/EAN/Fornitore compilati non si applica la categoria del pager,
+   * così la ricerca attraversa tutto il catalogo; il filtro categoria si usa solo se scritto nel campo.
+   */
+  const buildCatalogQueryParams = (f = filters, pageCatOverride) => {
+    const pageCat = pageCatOverride !== undefined ? pageCatOverride : activeCategoryPage;
+    const params = {};
+    if ((f.nome || '').trim()) params.nome = f.nome.trim();
+    if ((f.sku || '').trim()) params.sku = f.sku.trim();
+    if ((f.ean || '').trim()) params.ean = f.ean.trim();
+    if ((f.fornitore || '').trim()) params.fornitore = f.fornitore.trim();
+    const hasWideSearch =
+      !!(f.nome || '').trim() ||
+      !!(f.sku || '').trim() ||
+      !!(f.ean || '').trim() ||
+      !!(f.fornitore || '').trim();
+    const catFromField = (f.categoria || '').trim();
+    const pagerCat = (pageCat || '').trim();
+    const catEff = hasWideSearch ? catFromField : catFromField || pagerCat;
+    if (catEff) params.categoria = catEff;
+    return params;
+  };
+
   const handleSearch = (e) => {
     e.preventDefault();
-    const params = {};
-    if (filters.nome) params.nome = filters.nome;
-    if (filters.sku) params.sku = filters.sku;
-    if (filters.ean) params.ean = filters.ean;
-    if (filters.categoria) params.categoria = filters.categoria;
-    if (filters.fornitore) params.fornitore = filters.fornitore;
-    loadProducts(params);
+    loadProducts(buildCatalogQueryParams());
   };
 
   const handleImport = async (endpoint, file, supplierId) => {
@@ -912,6 +1350,71 @@ function App() {
     }
   };
 
+  const handleScrapeTakefiveOffers = async () => {
+    if (!selectedSupplierId) return;
+
+    const supplierName = selectedSupplier?.nome ? String(selectedSupplier.nome) : '';
+    if (supplierName.toLowerCase() !== 'takefive') {
+      setError('Scraping offerte disponibile solo per Takefive.');
+      return;
+    }
+
+    const requestedNameRaw = window.prompt(
+      'Nome file CSV per le offerte (es. offerta7.csv). Lascia vuoto per generare automaticamente (offerta1, offerta2, ...):',
+      ''
+    );
+    // Se l'utente annulla il prompt, interrompi l'operazione
+    if (requestedNameRaw === null) return;
+
+    const requestedName = String(requestedNameRaw || '').trim();
+
+    setUploading(true);
+    setError('');
+    setCsvPreviewName('');
+    setCsvPreviewText('');
+    setPendingImport(null);
+
+    try {
+      const res = await apiClient.post(`/suppliers/${selectedSupplierId}/scrape-offers`, null, {
+        params: requestedName ? { fileName: requestedName } : undefined,
+      });
+      const data = res?.data || {};
+      const base64 = data.fileContentBase64;
+      const fileName = data.fileName || 'offerte_takefive.csv';
+      const fileContentType = data.fileContentType || 'text/csv';
+
+      if (!base64) {
+        throw new Error('Risposta scraper senza fileContentBase64.');
+      }
+
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+      const blob = new Blob([bytes], { type: fileContentType });
+      const file = new File([blob], fileName, { type: fileContentType });
+
+      await handleImportWithPreview(
+        '/suppliers/' + selectedSupplierId + '/imports',
+        file,
+        selectedSupplierId
+      );
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) ||
+        data?.error ||
+        data?.message ||
+        data?.logs ||
+        e?.message ||
+        'Errore durante lo scraping delle offerte';
+      setError(status ? `HTTP ${status}: ${backendMessage}` : backendMessage);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const handleImportWithPreview = async (endpoint, file, supplierId) => {
     if (!file) return;
     if (supplierId) {
@@ -1069,7 +1572,7 @@ function App() {
       const params = value === '' || value == null ? {} : { percent: Number(value) };
       await apiClient.put(`/categories/${categoryId}/increase`, null, { params });
       await loadCategories();
-      await loadProducts(filters.categoria ? { categoria: filters.categoria } : {});
+      await loadProducts(buildCatalogQueryParams());
     } catch (e) {
       setError("Errore nel salvataggio dell'aumento categoria");
     }
@@ -1200,6 +1703,63 @@ function App() {
     }
   };
 
+  const handleExportMagentoCurrentCategory = async () => {
+    if (!selectedMagentoCategoryId) {
+      setError('Seleziona una categoria da esportare su Magento.');
+      return;
+    }
+    const selectedCategory = categories.find(
+      (c) => String(c.id) === String(selectedMagentoCategoryId)
+    );
+    const categoryLabel = selectedCategory?.nome || 'categoria selezionata';
+    if (
+      !window.confirm(
+        `Sincronizzare su Magento tutti i prodotti della categoria "${categoryLabel}"?\n\n` +
+          'Per ogni prodotto: se esiste su Magento viene aggiornato, altrimenti viene creato.'
+      )
+    ) {
+      return;
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    setSyncingMagentoCurrentCategory(true);
+    setError('');
+    try {
+      const response = await apiClient.post(
+        `/products/export/magento/category/${selectedMagentoCategoryId}`,
+        null,
+        { signal: controller.signal }
+      );
+      const d = response.data || {};
+      const created = d.created ?? 0;
+      const updated = d.updated ?? 0;
+      const skipped = d.skipped ?? 0;
+      const imagesUploaded = d.imagesUploaded ?? 0;
+      const processed = d.productsProcessed ?? 0;
+      const errs = d.errorsBySku ?? {};
+      const errCount = Object.keys(errs).length;
+      let msg = `Magento categoria "${d.categoryName || categoryLabel}": ${processed} prodotti, ${created} creati, ${updated} aggiornati, ${skipped} saltati, ${imagesUploaded} immagini caricate`;
+      if (errCount > 0) {
+        msg += `, ${errCount} errori (vedi console)`;
+        console.warn('Errori Magento categoria per SKU:', errs);
+      }
+      alert(msg);
+      setShowMagentoCategoryModal(false);
+    } catch (e) {
+      if (e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') {
+        setCancelMessage();
+        return;
+      }
+      const data = e?.response?.data;
+      const errMsg =
+        data?.error ?? data?.hint ?? e?.message ?? 'Errore durante l\'esportazione categoria su Magento';
+      setError(errMsg);
+    } finally {
+      abortControllerRef.current = null;
+      setSyncingMagentoCurrentCategory(false);
+    }
+  };
+
   // eslint-disable-next-line no-unused-vars -- stub per evitare no-undef (referenza residua)
   const loadProductRevisions = async () => {};
 
@@ -1258,7 +1818,7 @@ function App() {
 
   const handleProductRowClick = (product) => {
     setSelectedProduct(product);
-    const pb = product.prezzoBase;
+    const pb = isOffertaContext && product.prezzoOfferta != null ? product.prezzoOfferta : product.prezzoBase;
     setProductForm({
       nome: product.nome || '',
       descrizione: product.descrizione || '',
@@ -1412,15 +1972,15 @@ function App() {
   };
 
   const handleProductSave = async (e) => {
-    e.preventDefault();
-    if (!selectedProduct) return;
-    if (savingProductRef.current) return;
+    e?.preventDefault?.();
+    if (!selectedProduct) return false;
+    if (savingProductRef.current) return false;
     savingProductRef.current = true;
     setSavingProduct(true);
     setError('');
     try {
-      const form = e.target;
-      const elPrezzo = form.elements?.prezzoBase ?? form.querySelector?.('[name="prezzoBase"]');
+      const form = e?.target ?? null;
+      const elPrezzo = form?.elements?.prezzoBase ?? form?.querySelector?.('[name="prezzoBase"]');
       const rawPrezzo = elPrezzo?.value ?? productForm.prezzoBase;
       const parsePrezzo = (v) => {
         if (v === '' || v == null || v === undefined) return null;
@@ -1431,19 +1991,20 @@ function App() {
       };
       const prezzoBaseVal = parsePrezzo(rawPrezzo);
       const payload = {
-        nome: form.nome?.value ?? productForm.nome,
-        descrizione: form.descrizione?.value ?? productForm.descrizione,
-        disponibilita: (form.disponibilita?.value ?? productForm.disponibilita) || null,
-        ean: (form.ean?.value ?? productForm.ean)?.trim() || null,
-        marca: (form.marca?.value ?? productForm.marca)?.trim() || null,
-        codiceProduttore: (form.codiceProduttore?.value ?? productForm.codiceProduttore)?.trim() || null,
-        prezzoBase: prezzoBaseVal,
+        nome: form?.nome?.value ?? productForm.nome ?? selectedProduct.nome,
+        descrizione: form?.descrizione?.value ?? productForm.descrizione ?? selectedProduct.descrizione,
+        disponibilita: (form?.disponibilita?.value ?? productForm.disponibilita ?? selectedProduct.disponibilita) || null,
+        ean: (form?.ean?.value ?? productForm.ean ?? selectedProduct.ean)?.trim() || null,
+        marca: (form?.marca?.value ?? productForm.marca ?? selectedProduct.marca)?.trim() || null,
+        codiceProduttore: (form?.codiceProduttore?.value ?? productForm.codiceProduttore ?? selectedProduct.codiceProduttore)?.trim() || null,
+        prezzoBase: isOffertaContext ? (selectedProduct.prezzoBase ?? null) : prezzoBaseVal,
+        prezzoOfferta: isOffertaContext ? prezzoBaseVal : (selectedProduct.prezzoOfferta ?? null),
         aumentoPercentuale: (() => {
-          const v = form.aumentoPercentuale?.value ?? productForm.aumentoPercentuale;
+          const v = form?.aumentoPercentuale?.value ?? productForm.aumentoPercentuale ?? selectedProduct.aumentoPercentuale;
           return v === '' || v == null ? null : Number(v);
         })(),
         categoriaId: (() => {
-          const v = form.categoriaId?.value ?? productForm.categoriaId;
+          const v = form?.categoriaId?.value ?? productForm.categoriaId ?? selectedProduct.categoria?.id;
           return v && v !== '' ? (typeof v === 'number' ? v : Number(v)) : null;
         })(),
       };
@@ -1452,27 +2013,28 @@ function App() {
       const categoryChanged =
         (savedProduct.categoria?.id ?? null) !==
         (selectedProduct.categoria?.id ?? null);
-      const params = {};
-      if (filters.nome) params.nome = filters.nome;
-      if (filters.sku) params.sku = filters.sku;
-      if (filters.ean) params.ean = filters.ean;
-      if (filters.fornitore) params.fornitore = filters.fornitore;
+      const params = buildCatalogQueryParams();
       if (categoryChanged) {
-        const newCategory = savedProduct.categoria?.nome || '';
-        if (newCategory || filters.categoria || activeCategoryPage) {
-          params.categoria = newCategory || filters.categoria || activeCategoryPage;
+        const newCategory = (savedProduct.categoria?.nome || '').trim();
+        if (newCategory) {
+          params.categoria = newCategory;
+          setActiveCategoryPage(newCategory);
+        } else {
+          delete params.categoria;
+          setActiveCategoryPage('');
         }
-        setActiveCategoryPage(newCategory || activeCategoryPage);
-        setFilters((prev) => ({ ...prev, categoria: newCategory }));
-      } else if (filters.categoria || activeCategoryPage) {
-        params.categoria = filters.categoria || activeCategoryPage;
+        setFilters((prev) => ({ ...prev, categoria: '' }));
       }
       await loadProducts(params);
       setSelectedProduct(savedProduct);
-      const spb = savedProduct.prezzoBase;
+      const spb = isOffertaContext && savedProduct.prezzoOfferta != null
+        ? savedProduct.prezzoOfferta
+        : savedProduct.prezzoBase;
       setProductForm({
         nome: savedProduct.nome || '',
         descrizione: savedProduct.descrizione || '',
+        disponibilita: savedProduct.disponibilita ?? '',
+        ean: savedProduct.ean ?? '',
         marca: savedProduct.marca || '',
         codiceProduttore: savedProduct.codiceProduttore || '',
         prezzoBase: spb != null && spb !== '' ? String(spb) : '',
@@ -1485,8 +2047,20 @@ function App() {
           setAllProductRevisions(Array.isArray(revRes.data) ? revRes.data : []);
         } catch (_) { /* ignore */ }
       }
+      return true;
     } catch (e) {
-      setError('Errore nel salvataggio del prodotto');
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) || data?.message || data?.error || data?.detail;
+      const details = [
+        status ? `HTTP ${status}` : null,
+        backendMessage ? String(backendMessage) : null,
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      setError(details ? `Errore nel salvataggio del prodotto (${details})` : 'Errore nel salvataggio del prodotto');
+      return false;
     } finally {
       savingProductRef.current = false;
       setSavingProduct(false);
@@ -1527,7 +2101,8 @@ function App() {
         ean: emptyToNull(source.ean),
         marca: emptyToNull(source.marca),
         codiceProduttore: emptyToNull(source.codiceProduttore),
-        prezzoBase: emptyToNull(source.prezzoBase),
+        prezzoBase: isOffertaContext && useProductFormValues ? emptyToNull(product.prezzoBase) : emptyToNull(source.prezzoBase),
+        prezzoOfferta: isOffertaContext && useProductFormValues ? emptyToNull(source.prezzoBase) : emptyToNull(product.prezzoOfferta),
         aumentoPercentuale: parsePercentOrNull(source.aumentoPercentuale),
         categoriaId: nextCategoriaIdSafe,
       };
@@ -1541,7 +2116,9 @@ function App() {
       setSelectedProduct((prev) => (prev?.id === product.id ? savedProduct : prev));
 
       if (isCurrentSelected) {
-        const spb = savedProduct.prezzoBase;
+        const spb = isOffertaContext && savedProduct.prezzoOfferta != null
+          ? savedProduct.prezzoOfferta
+          : savedProduct.prezzoBase;
         setProductForm({
           nome: savedProduct.nome || '',
           descrizione: savedProduct.descrizione || '',
@@ -1555,25 +2132,17 @@ function App() {
         });
       }
 
-      const params = {};
-      if (filters.nome) params.nome = filters.nome;
-      if (filters.sku) params.sku = filters.sku;
-      if (filters.ean) params.ean = filters.ean;
-      if (filters.fornitore) params.fornitore = filters.fornitore;
-
+      const params = buildCatalogQueryParams();
       if (categoryChanged) {
-        const newCategoryName = savedProduct.categoria?.nome || '';
+        const newCategoryName = (savedProduct.categoria?.nome || '').trim();
         if (newCategoryName) {
           params.categoria = newCategoryName;
           setActiveCategoryPage(newCategoryName);
-          setFilters((prev) => ({ ...prev, categoria: newCategoryName }));
         } else {
-          // Categoria vuota: atterriamo su "Tutte" (nessun filtro categoria).
+          delete params.categoria;
           setActiveCategoryPage('');
-          setFilters((prev) => ({ ...prev, categoria: '' }));
         }
-      } else if (filters.categoria || activeCategoryPage) {
-        params.categoria = filters.categoria || activeCategoryPage;
+        setFilters((prev) => ({ ...prev, categoria: '' }));
       }
 
       await loadProducts(params);
@@ -1597,18 +2166,32 @@ function App() {
 
   const handleProductDelete = async (productId) => {
     if (!productId) return;
-    if (!window.confirm('Vuoi cancellare questo prodotto dal catalogo?')) {
+    const activeVirtualNuovi =
+      String(filters.categoria || activeCategoryPage || '').trim().toLowerCase() ===
+      String(NEW_PRODUCTS_CATEGORY_NAME).trim().toLowerCase();
+    const activeVirtualOfferta =
+      String(filters.categoria || activeCategoryPage || '').trim().toLowerCase() ===
+      String(OFFERTA_CATEGORY_NAME).trim().toLowerCase();
+    const confirmMessage = activeVirtualNuovi
+      ? 'Vuoi rimuovere questo prodotto da "Nuovi prodotti"? Il prodotto resterà nella sua categoria principale.'
+      : activeVirtualOfferta
+        ? 'Vuoi rimuovere questo prodotto da "In offerta"? Il prodotto resterà nella sua categoria principale.'
+        : 'Vuoi cancellare questo prodotto dal catalogo?';
+    if (!window.confirm(confirmMessage)) {
       return;
     }
     setSavingProduct(true);
     setError('');
     try {
-      await apiClient.delete(`/products/${productId}`);
+      if (activeVirtualNuovi) {
+        await apiClient.post(`/products/${productId}/remove-nuovi-prodotti`);
+      } else if (activeVirtualOfferta) {
+        await apiClient.post(`/products/${productId}/remove-offerta`);
+      } else {
+        await apiClient.delete(`/products/${productId}`);
+      }
       setSelectedProduct(null);
-      // Manteniamo la stessa categoria attiva: dopo delete non vogliamo tornare su "Tutte".
-      const params = {};
-      if (filters.categoria) params.categoria = filters.categoria;
-      await loadProducts(params);
+      await loadProducts(buildCatalogQueryParams());
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data;
@@ -1663,6 +2246,44 @@ function App() {
     }
   };
 
+  const handleSyncSingleProductToMagento = async (productId) => {
+    if (!productId) return;
+    if (syncingMagentoSingle) return;
+    setSyncingMagentoSingle(true);
+    setError('');
+    try {
+      // Prima persiste eventuali modifiche correnti del form, poi synca su Magento.
+      if (selectedProduct?.id === productId) {
+        const saved = await handleProductSave({ preventDefault: () => {}, target: null });
+        if (!saved) return;
+      }
+      const response = await apiClient.post(`/products/${productId}/export/magento`);
+      const stats = response?.data || {};
+      const created = Number(stats.created || 0);
+      const updated = Number(stats.updated || 0);
+      const imagesUploaded = Number(stats.imagesUploaded || 0);
+      const hasErrors = stats.errorsBySku && Object.keys(stats.errorsBySku).length > 0;
+      if (hasErrors) {
+        setError('Sync Magento completata con errori per questo prodotto.');
+      } else {
+        const msg = `Magento aggiornato (creati: ${created}, aggiornati: ${updated}, immagini: ${imagesUploaded}).`;
+        setError(msg);
+        setTimeout(() => setError(''), 4000);
+      }
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      const backendMessage =
+        (typeof data === 'string' && data) || data?.message || data?.error || data?.detail;
+      const details = [status ? `HTTP ${status}` : null, backendMessage ? String(backendMessage) : null]
+        .filter(Boolean)
+        .join(' - ');
+      setError(details ? `Errore sync Magento (${details})` : 'Errore sync Magento per questo prodotto.');
+    } finally {
+      setSyncingMagentoSingle(false);
+    }
+  };
+
   const handleSetDocumentAsMain = async (productId, documentId) => {
     if (!productId || !documentId) return;
     setError('');
@@ -1686,6 +2307,10 @@ function App() {
     try {
       const formData = new FormData();
       formData.append('file', manualImageFile);
+      const descrizione = String(productForm?.descrizione ?? '').trim();
+      if (descrizione) {
+        formData.append('descrizione', descrizione);
+      }
       await apiClient.post(`/products/${productId}/documents/upload`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
@@ -1739,9 +2364,15 @@ function App() {
   /** Restituisce la prima immagine dai documenti, ordinata per ordine (0 = principale). */
   const getMainImageDoc = (documenti) => {
     if (!documenti || documenti.length === 0) return null;
-    const images = documenti.filter((d) =>
-      (d.tipo || '').toLowerCase() === 'immagine' || (d.tipo || '').toLowerCase() === 'image'
-    );
+    const images = documenti.filter((d) => {
+      const tipo = (d.tipo || '').toLowerCase();
+      return (
+        tipo === 'immagine' ||
+        tipo === 'image' ||
+        tipo === 'immagine_manual' ||
+        tipo.startsWith('immagine')
+      );
+    });
     if (images.length === 0) return null;
     const sorted = [...images].sort((a, b) => (a.ordine ?? 999) - (b.ordine ?? 999));
     return sorted[0];
@@ -1952,6 +2583,12 @@ function App() {
     setActiveNav(sectionId);
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    setAuthOk(false);
+    setError('');
+  };
+
   const openFullscreenImage = (src, alt = '') => {
     setFullscreenImage({ src, alt });
   };
@@ -2014,8 +2651,154 @@ function App() {
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
+  if (!authOk) {
+    return (
+      <LoginScreen
+        onLogin={(username, password) => {
+          const ok = String(username ?? '').trim() === LOGIN_USERNAME && String(password ?? '') === LOGIN_PASSWORD;
+          if (ok) {
+            localStorage.setItem(AUTH_STORAGE_KEY, '1');
+            setAuthOk(true);
+          }
+          return ok;
+        }}
+      />
+    );
+  }
+
   return (
     <div className="App">
+      {showMagentoCategoryModal && (
+        <div
+          className="fullscreen-image-overlay"
+          style={{ alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.6)' }}
+          onClick={() => setShowMagentoCategoryModal(false)}
+          role="button"
+          tabIndex={-1}
+          aria-label="Chiudi"
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: '520px',
+              width: '90%',
+              maxHeight: '80vh',
+              overflow: 'auto',
+              padding: '1.5rem',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0 }}>Esporta categoria su Magento</h3>
+              <button type="button" className="icon-button" onClick={() => setShowMagentoCategoryModal(false)} aria-label="Chiudi">
+                ✕
+              </button>
+            </div>
+            <p className="muted" style={{ marginTop: 0 }}>
+              Scegli la categoria da esportare. I prodotti esistenti su Magento vengono aggiornati, i mancanti vengono creati.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+              <select
+                value={selectedMagentoCategoryId}
+                onChange={(e) => setSelectedMagentoCategoryId(e.target.value)}
+                disabled={syncingMagentoCurrentCategory}
+              >
+                <option value="">Seleziona categoria...</option>
+                {sortedCategories.map((c) => (
+                  <option key={`magento-cat-${c.id}`} value={c.id}>
+                    {c.nome}
+                  </option>
+                ))}
+              </select>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={handleExportMagentoCurrentCategory}
+                  disabled={!selectedMagentoCategoryId || syncingMagentoCurrentCategory}
+                >
+                  {syncingMagentoCurrentCategory ? 'Esportazione...' : 'Esporta categoria su Magento'}
+                </button>
+                <button
+                  type="button"
+                  className="icon-button icon-button-secondary"
+                  onClick={() => setShowMagentoCategoryModal(false)}
+                  disabled={syncingMagentoCurrentCategory}
+                >
+                  Chiudi
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showEmptyCategoryModal && (
+        <div
+          className="fullscreen-image-overlay"
+          style={{ alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.6)' }}
+          onClick={() => !emptyingCategory && setShowEmptyCategoryModal(false)}
+          role="button"
+          tabIndex={-1}
+          aria-label="Chiudi"
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: '520px',
+              width: '90%',
+              maxHeight: '80vh',
+              overflow: 'auto',
+              padding: '1.5rem',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0 }}>Svuota categoria</h3>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => !emptyingCategory && setShowEmptyCategoryModal(false)}
+                disabled={emptyingCategory}
+                aria-label="Chiudi"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="muted" style={{ marginTop: 0 }}>
+              Scegli la categoria. Per le categorie reali i prodotti vanno nel cestino; per &quot;In offerta&quot; e
+              &quot;Nuovi prodotti&quot; vengono aggiornati solo i flag virtuali.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+              <select
+                value={selectedEmptyCategoryId}
+                onChange={(e) => setSelectedEmptyCategoryId(e.target.value)}
+                disabled={emptyingCategory}
+              >
+                <option value="">Seleziona categoria...</option>
+                {sortedCategories.map((c) => (
+                  <option key={`empty-cat-${c.id}`} value={c.id}>
+                    {c.nome}
+                  </option>
+                ))}
+              </select>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <button type="button" className="danger-button" onClick={handleEmptyCategoryConfirm} disabled={!selectedEmptyCategoryId || emptyingCategory}>
+                  {emptyingCategory ? 'Attendere...' : 'Svuota categoria'}
+                </button>
+                <button
+                  type="button"
+                  className="icon-button icon-button-secondary"
+                  onClick={() => setShowEmptyCategoryModal(false)}
+                  disabled={emptyingCategory}
+                >
+                  Chiudi
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showRollbackSelectModal && (
         <div
           className="fullscreen-image-overlay"
@@ -2209,16 +2992,22 @@ function App() {
       </header>
 
       <main className="app-main">
-        {(uploading || syncingIcecat || syncingMagento || syncingMagentoCategories) && (
+        {(uploading || syncingIcecat || syncingMagento || syncingMagentoCategories || syncingMagentoCurrentCategory || emptyingCategory) && (
           <div className="alert alert-info" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
             <span>
               {uploading
                 ? 'Import in corso...'
-                : syncingIcecat
-                  ? 'Sincronizzazione Icecat in corso...'
-                  : syncingMagentoCategories
-                    ? 'Aggiornamento categorie Magento in corso...'
-                    : 'Sincronizzazione Magento in corso...'}{' '}
+                : emptyingCategory
+                  ? 'Svuotamento categoria in corso...'
+                  : syncingIcecat
+                    ? 'Sincronizzazione Icecat in corso...'
+                    : syncingMagentoCategories
+                      ? 'Aggiornamento categorie Magento in corso...'
+                      : syncingMagentoCurrentCategory
+                        ? 'Sincronizzazione categoria Magento in corso...'
+                        : syncingMagento
+                          ? 'Sincronizzazione Magento in corso...'
+                          : 'Operazione in corso...'}{' '}
               attendere il completamento.
             </span>
             <button
@@ -2258,6 +3047,22 @@ function App() {
             onClick={() => handleNavClick('aumenti')}
           >
             Aumenti di prezzo
+          </button>
+          <button
+            type="button"
+            className={activeNav === 'cestino' ? 'app-nav-active' : ''}
+            onClick={() => handleNavClick('cestino')}
+            title="Visualizza articoli eliminati"
+          >
+            Cestino
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={handleLogout}
+            title="Esci dalla sessione"
+          >
+            Logout
           </button>
         </nav>
 
@@ -2326,10 +3131,11 @@ function App() {
                   {categoryPageList.map((cat, idx) => {
                     const catObj = categories.find((c) => c.nome === cat);
                     const catId = catObj?.id;
+                    const catCount = catId != null ? (categoryCounts?.[catId] ?? 0) : 0;
                     return (
                       <div key={cat} className="category-legend-item">
                         <span className="category-legend-num">{idx + 1}</span>
-                        <span className="category-legend-name">{cat}</span>
+                        <span className="category-legend-name">{cat} ({catCount})</span>
                         {catId != null && (
                           <button
                             type="button"
@@ -2389,7 +3195,7 @@ function App() {
                 <input
                   type="text"
                   name="categoria"
-                  placeholder="Categoria"
+                  placeholder="Categoria (opzionale)"
                   value={filters.categoria}
                   onChange={handleFilterChange}
                 />
@@ -2403,7 +3209,7 @@ function App() {
                 <button type="submit" disabled={loading}>
                   {loading ? 'Caricamento...' : 'Cerca'}
                 </button>
-                {(filters.categoria || filters.fornitore) && (
+                {(filters.categoria || filters.fornitore || activeCategoryPage) && (
                   <button
                     type="button"
                     className="secondary-button"
@@ -2411,11 +3217,7 @@ function App() {
                       const nextFilters = { ...filters, categoria: '', fornitore: '' };
                       setFilters(nextFilters);
                       setActiveCategoryPage('');
-                      const params = {};
-                      if (nextFilters.nome) params.nome = nextFilters.nome;
-                      if (nextFilters.sku) params.sku = nextFilters.sku;
-                      if (nextFilters.ean) params.ean = nextFilters.ean;
-                      loadProducts(params);
+                      loadProducts(buildCatalogQueryParams(nextFilters, ''));
                     }}
                     disabled={loading || uploading}
                   >
@@ -2507,7 +3309,7 @@ function App() {
                         <label>EAN <input type="text" name="ean" placeholder="Es. 8057284620150 (per Icecat)" value={productForm.ean} onChange={handleProductFormChange} /></label>
                         <label>Marca <input type="text" name="marca" placeholder="Es. VULTECH (per fallback Icecat)" value={productForm.marca} onChange={handleProductFormChange} /></label>
                         <label>Codice produttore <input type="text" name="codiceProduttore" placeholder="Es. GS-25U3 (per fallback Icecat)" value={productForm.codiceProduttore} onChange={handleProductFormChange} /></label>
-                        <label>Prezzo base <input type="number" step="0.01" name="prezzoBase" value={productForm.prezzoBase ?? ''} onChange={handleProductFormChange} /></label>
+                        <label>{isOffertaContext ? 'Prezzo offerta' : 'Prezzo base'} <input type="number" step="0.01" name="prezzoBase" value={productForm.prezzoBase ?? ''} onChange={handleProductFormChange} /></label>
                         <label>Aumento specifico prodotto (%) <input type="number" step="0.01" name="aumentoPercentuale" value={productForm.aumentoPercentuale} onChange={handleProductFormChange} /></label>
                         <label>
                           Categoria
@@ -2525,7 +3327,20 @@ function App() {
                             ))}
                           </select>
                         </label>
-                        <div className="product-form-actions"><button type="submit" disabled={savingProduct}>{savingProduct ? 'Salvataggio...' : 'Salva modifiche'}</button></div>
+                        <div className="product-form-actions" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                          <button type="submit" disabled={savingProduct || syncingMagentoSingle}>
+                            {savingProduct ? 'Salvataggio...' : 'Salva modifiche'}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={savingProduct || syncingMagentoSingle}
+                            onClick={() => handleSyncSingleProductToMagento(selectedProduct.id)}
+                            title="Aggiorna solo questo prodotto su Magento"
+                          >
+                            {syncingMagentoSingle ? 'Sync Magento...' : 'Aggiorna su Magento'}
+                          </button>
+                        </div>
                       </form>
                       <div className="product-documents">
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
@@ -2544,7 +3359,12 @@ function App() {
                             {[...selectedProduct.documenti].sort((a, b) => (a.ordine ?? 999) - (b.ordine ?? 999)).map((d) => {
                               const url = d.url || d.urlDocumento;
                               const imgSrc = url?.startsWith('/') ? (API_ORIGIN + url) : (url?.includes('icecat') || url?.startsWith('http') ? `${API_BASE}/images/proxy?url=${encodeURIComponent(url)}` : url);
-                              const isImg = (d.tipo || '').toLowerCase() === 'immagine' || (d.tipo || '').toLowerCase() === 'image';
+                              const tipo = (d.tipo || '').toLowerCase();
+                              const isImg =
+                                tipo === 'immagine' ||
+                                tipo === 'image' ||
+                                tipo === 'immagine_manual' ||
+                                tipo.startsWith('immagine');
                               const isMain = isImg && ((d.ordine ?? 999) === 0);
                               return (
                                 <li key={d.id || `${d.tipo}-${url}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', padding: '0.75rem', background: isMain ? '#fff5f5' : '#f9fafb', border: isMain ? '2px solid #dc2626' : '1px solid #e5e7eb', borderRadius: 8, minWidth: 140 }}>
@@ -2578,7 +3398,7 @@ function App() {
                         <th>Disponibilità (CS)</th>
                         <th>Aumento specifico prodotto (%)</th>
                         <th>Aumento categoria (%)</th>
-                        <th>Prezzo base</th>
+                        <th>{isOffertaContext ? 'Prezzo offerta' : 'Prezzo base'}</th>
                         <th>Prezzo finale</th>
                         <th>Descrizione</th>
                         <th>Image</th>
@@ -2588,7 +3408,11 @@ function App() {
                     <tbody>
                       {products.length === 0 && (
                         <tr>
-                          <td colSpan="13">Nessun prodotto trovato</td>
+                          <td colSpan="13">
+                            {filters.nome || filters.sku || filters.ean || filters.fornitore
+                              ? 'Nessun prodotto con i filtri attuali (svuota Nome, SKU, EAN o Fornitore e premi Cerca).'
+                              : 'Nessun prodotto trovato'}
+                          </td>
                         </tr>
                       )}
                       {products.map((p) => (
@@ -2632,10 +3456,14 @@ function App() {
                             {getRincaroApplicato(p) != null ? getRincaroApplicato(p) : '—'}
                           </td>
                           <td>
-                            {formatPrezzo(p.prezzoBase)}
+                            {formatPrezzo(getDisplayedBasePrice(p))}
                           </td>
                           <td>
-                            {formatPrezzo(p.prezzoFinale)}
+                            {formatPrezzo(
+                              isOffertaContext
+                                ? (p?.prezzoOfferta != null ? p.prezzoOfferta : p?.prezzoFinale)
+                                : computeBaseFinalPriceForDisplay(p)
+                            )}
                           </td>
                           <td>
                             {p.descrizione ? (
@@ -2797,7 +3625,7 @@ function App() {
                             />
                           </label>
                           <label>
-                            Prezzo base
+                            {isOffertaContext ? 'Prezzo offerta' : 'Prezzo base'}
                             <input
                               type="number"
                               step="0.01"
@@ -2928,7 +3756,7 @@ function App() {
                           />
                         </label>
                         <label>
-                          Prezzo base
+                          {isOffertaContext ? 'Prezzo offerta' : 'Prezzo base'}
                           <input
                             type="number"
                             step="0.01"
@@ -2964,11 +3792,20 @@ function App() {
                           </select>
                         </label>
 
-                        <div className="product-form-actions">
-                          <button type="submit" disabled={savingProduct}>
+                        <div className="product-form-actions" style={{ gap: '0.5rem' }}>
+                          <button type="submit" disabled={savingProduct || syncingMagentoSingle}>
                             {savingProduct
                               ? 'Salvataggio...'
                               : 'Salva modifiche'}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={savingProduct || syncingMagentoSingle}
+                            onClick={() => handleSyncSingleProductToMagento(selectedProduct.id)}
+                            title="Aggiorna solo questo prodotto su Magento"
+                          >
+                            {syncingMagentoSingle ? 'Sync Magento...' : 'Aggiorna su Magento'}
                           </button>
                         </div>
                       </form>
@@ -3018,7 +3855,12 @@ function App() {
                               .map((d) => {
                               const url = d.url || d.urlDocumento;
                               const imgSrc = url?.startsWith('/') ? (API_ORIGIN + url) : (url?.includes('icecat') || url?.startsWith('http') ? `${API_BASE}/images/proxy?url=${encodeURIComponent(url)}` : url);
-                              const isImg = (d.tipo || '').toLowerCase() === 'immagine' || (d.tipo || '').toLowerCase() === 'image';
+                              const tipo = (d.tipo || '').toLowerCase();
+                              const isImg =
+                                tipo === 'immagine' ||
+                                tipo === 'image' ||
+                                tipo === 'immagine_manual' ||
+                                tipo.startsWith('immagine');
                               const isMain = isImg && ((d.ordine ?? 999) === 0);
                               return (
                                 <li key={d.id || `${d.tipo}-${url}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', padding: '0.75rem', background: isMain ? '#fff5f5' : '#f9fafb', border: isMain ? '2px solid #dc2626' : '1px solid #e5e7eb', borderRadius: 8, minWidth: 140 }}>
@@ -3100,16 +3942,31 @@ function App() {
                   className="icon-button icon-button-secondary"
                   title="Sincronizza l'intero catalogo su Magento via REST API"
                   onClick={handleExportMagento}
-                  disabled={syncingMagento || syncingMagentoCategories}
+                  disabled={syncingMagento || syncingMagentoCategories || syncingMagentoCurrentCategory}
                 >
                   {syncingMagento ? 'Sincronizzazione Magento...' : '📤 Esporta su Magento'}
                 </button>
                 <button
                   type="button"
                   className="icon-button icon-button-secondary"
+                  title="Apri la lista categorie da esportare su Magento"
+                  onClick={() => {
+                    const fallbackId = activeCategoryId ? String(activeCategoryId) : '';
+                    setSelectedMagentoCategoryId((prev) => prev || fallbackId);
+                    setShowMagentoCategoryModal(true);
+                  }}
+                  disabled={syncingMagento || syncingMagentoCategories || syncingMagentoCurrentCategory}
+                >
+                  {syncingMagentoCurrentCategory
+                    ? 'Categoria Magento...'
+                    : '📦 Esporta categoria su Magento'}
+                </button>
+                <button
+                  type="button"
+                  className="icon-button icon-button-secondary"
                   title="Dopo aver spostato prodotti tra categorie nel catalogo virtuale, allinea le categorie su Magento (solo prodotti già esistenti)"
                   onClick={handleSyncMagentoCategories}
-                  disabled={syncingMagento || syncingMagentoCategories}
+                  disabled={syncingMagento || syncingMagentoCategories || syncingMagentoCurrentCategory}
                 >
                   {syncingMagentoCategories
                     ? 'Categorie Magento...'
@@ -3141,6 +3998,19 @@ function App() {
                   disabled={savingProduct}
                 >
                   ↩ Annulla modifiche prodotti
+                </button>
+                <button
+                  type="button"
+                  className="icon-button icon-button-secondary"
+                  title="Svuota una categoria (cestino o solo flag virtuali)"
+                  onClick={() => {
+                    const fallbackId = activeCategoryId ? String(activeCategoryId) : '';
+                    setSelectedEmptyCategoryId((prev) => prev || fallbackId);
+                    setShowEmptyCategoryModal(true);
+                  }}
+                  disabled={syncingMagento || syncingMagentoCategories || syncingMagentoCurrentCategory || emptyingCategory}
+                >
+                  {emptyingCategory ? 'Svuotamento...' : '🗂️ Svuota categoria'}
                 </button>
                 <button
                   type="button"
@@ -3370,6 +4240,18 @@ function App() {
                 <div className="card" style={{ marginTop: '1rem', padding: '1rem' }}>
                   <h3 style={{ marginTop: 0 }}>Carica un nuovo CSV</h3>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {selectedSupplier?.nome &&
+                      String(selectedSupplier.nome).toLowerCase() === 'takefive' && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={handleScrapeTakefiveOffers}
+                          disabled={uploading}
+                          title="Esegue lo scraper Takefive e prepara un CSV da anteprima"
+                        >
+                          Aggiorna offerte
+                        </button>
+                      )}
                     <input
                       type="file"
                       accept=".csv,.xlsx,.xls,.xml"
@@ -3503,6 +4385,162 @@ function App() {
 
                 <div style={{ marginTop: '1rem' }}>
                   <h3 style={{ marginTop: 0 }}>Elenco CSV importati</h3>
+                  {!loadingSupplierImports && !supplierImportsError && supplierImports.length > 0 && (
+                    <div
+                      className="card"
+                      style={{
+                        marginBottom: '0.85rem',
+                        padding: '0.75rem',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.65rem',
+                      }}
+                    >
+                      <strong>Compara CSV (solo questo fornitore)</strong>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '1fr 1fr auto',
+                          gap: '0.5rem',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <select
+                          value={csvCompareLeftId}
+                          onChange={(e) => setCsvCompareLeftId(e.target.value)}
+                          disabled={csvCompareLoading}
+                        >
+                          <option value="">CSV A...</option>
+                          {supplierImports.map((log) => (
+                            <option key={`left-${log.id}`} value={log.id}>
+                              {log.fileName} ({new Date(log.importedAt).toLocaleString()})
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={csvCompareRightId}
+                          onChange={(e) => setCsvCompareRightId(e.target.value)}
+                          disabled={csvCompareLoading}
+                        >
+                          <option value="">CSV B...</option>
+                          {supplierImports.map((log) => (
+                            <option key={`right-${log.id}`} value={log.id}>
+                              {log.fileName} ({new Date(log.importedAt).toLocaleString()})
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleCompareSupplierCsv}
+                          disabled={csvCompareLoading || !csvCompareLeftId || !csvCompareRightId}
+                        >
+                          {csvCompareLoading ? 'Confronto...' : 'Compara CSV'}
+                        </button>
+                      </div>
+
+                      {csvCompareResult && (
+                        <div
+                          style={{
+                            border: '1px solid #f2c1c1',
+                            borderRadius: '8px',
+                            padding: '0.65rem',
+                            background: '#fff8f8',
+                          }}
+                        >
+                          <p style={{ margin: '0 0 0.35rem 0' }}>
+                            <strong>{csvCompareResult.recommendation}</strong>
+                          </p>
+                          <p className="muted" style={{ margin: 0 }}>
+                            A: {csvCompareResult.leftFileName} | B: {csvCompareResult.rightFileName}
+                          </p>
+                          <p className="muted" style={{ margin: '0.3rem 0 0 0' }}>
+                            Righe A: {csvCompareResult.leftRows} | Righe B: {csvCompareResult.rightRows} | Uguali:{' '}
+                            {csvCompareResult.unchanged} | Solo A: {csvCompareResult.onlyLeft} | Solo B:{' '}
+                            {csvCompareResult.onlyRight}
+                          </p>
+                          <p className="muted" style={{ margin: '0.3rem 0 0 0' }}>
+                            Prezzo cambiato: {csvCompareResult.priceChanged} | Disponibilita cambiata:{' '}
+                            {csvCompareResult.availabilityChanged} | Stato offerta cambiato:{' '}
+                            {csvCompareResult.offerChanged}
+                          </p>
+                          {csvComparePriceStats.total > 0 && (
+                            <p className="muted" style={{ margin: '0.3rem 0 0 0' }}>
+                              Prezzi: {csvComparePriceStats.lower} elementi più bassi, {csvComparePriceStats.higher} elementi più alti
+                              {csvComparePriceStats.unchanged > 0 ? `, ${csvComparePriceStats.unchanged} invariati` : ''}.
+                            </p>
+                          )}
+                          {Array.isArray(csvCompareResult.newlyInOfferKeys) &&
+                            csvCompareResult.newlyInOfferKeys.length > 0 && (
+                              <p className="muted" style={{ margin: '0.3rem 0 0 0' }}>
+                                Nuove offerte: {csvCompareResult.newlyInOfferKeys.slice(0, 15).join(', ')}
+                              </p>
+                            )}
+                          {Array.isArray(csvCompareResult.priceDifferences) &&
+                            csvCompareResult.priceDifferences.length > 0 && (
+                              <div style={{ marginTop: '0.6rem' }}>
+                                <p style={{ margin: '0 0 0.35rem 0' }}>
+                                  <strong>Lista variazioni prezzo</strong>
+                                </p>
+                                <div
+                                  style={{
+                                    maxHeight: '260px',
+                                    overflow: 'auto',
+                                    border: '1px solid #f2d6d6',
+                                    borderRadius: '6px',
+                                    background: '#fff',
+                                  }}
+                                >
+                                  <table style={{ width: '100%', fontSize: '0.9rem' }}>
+                                    <thead>
+                                      <tr>
+                                        <th>Nome</th>
+                                        <th>SKU</th>
+                                        <th>EAN</th>
+                                        <th>Vecchio</th>
+                                        <th>Nuovo</th>
+                                        <th>Delta</th>
+                                        <th>Stato</th>
+                                        <th>Match</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {csvCompareResult.priceDifferences.map((d, idx) => (
+                                        <tr key={`price-diff-${idx}`}>
+                                          <td>{d.nome || '-'}</td>
+                                          <td>{d.sku || '-'}</td>
+                                          <td>{d.ean || '-'}</td>
+                                          <td>{d.oldPrice != null ? formatPrezzo(d.oldPrice) : '-'}</td>
+                                          <td>{d.newPrice != null ? formatPrezzo(d.newPrice) : '-'}</td>
+                                          <td>
+                                            {typeof d.delta === 'number'
+                                              ? `${d.delta >= 0 ? '+' : '-'}${formatPrezzo(Math.abs(d.delta))}`
+                                              : '-'}
+                                          </td>
+                                          <td>{d.direction || '-'}</td>
+                                          <td>{d.matchedBy || '-'}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            )}
+                          {Array.isArray(csvCompareResult.missingInRight) &&
+                            csvCompareResult.missingInRight.length > 0 && (
+                              <p className="muted" style={{ margin: '0.45rem 0 0 0' }}>
+                                Solo in CSV A: {csvCompareResult.missingInRight.slice(0, 15).map((x) => x.sku || x.ean || x.nome).filter(Boolean).join(', ')}
+                              </p>
+                            )}
+                          {Array.isArray(csvCompareResult.missingInLeft) &&
+                            csvCompareResult.missingInLeft.length > 0 && (
+                              <p className="muted" style={{ margin: '0.3rem 0 0 0' }}>
+                                Solo in CSV B: {csvCompareResult.missingInLeft.slice(0, 15).map((x) => x.sku || x.ean || x.nome).filter(Boolean).join(', ')}
+                              </p>
+                            )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {loadingSupplierImports ? (
                     <p className="muted">Caricamento...</p>
                   ) : supplierImportsError ? (
@@ -3566,6 +4604,16 @@ function App() {
                                   }
                                 >
                                   👁️
+                                </button>
+                                <button
+                                  type="button"
+                                  className="icon-button icon-button-secondary"
+                                  style={{ marginLeft: '0.35rem' }}
+                                  title="Confronta CSV con database"
+                                  disabled={csvCompareLoading || String(log.tipo).toUpperCase() !== 'PRODOTTI'}
+                                  onClick={() => handleCompareCsvWithDatabase(log.id)}
+                                >
+                                  DB
                                 </button>
                                 <button
                                   type="button"
@@ -3714,6 +4762,113 @@ function App() {
                 </div>
               </div>
             </div>
+          </section>
+        )}
+        {activeNav === 'cestino' && (
+          <section className="card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <h2 style={{ margin: 0 }}>Cestino articoli</h2>
+              <button
+                type="button"
+                className="icon-button icon-button-danger"
+                title="Elimina definitivamente tutti gli articoli nel cestino"
+                onClick={handleEmptyTrash}
+                disabled={savingProduct || loadingDeletedProducts || deletedProducts.length === 0}
+              >
+                🗑️ Svuota cestino
+              </button>
+            </div>
+            <p className="muted" style={{ marginTop: '0.35rem' }}>
+              Qui trovi i prodotti eliminati dal catalogo. Puoi ripristinarli quando vuoi.
+            </p>
+            <div className="filters-grid" style={{ marginTop: '0.75rem' }}>
+              <input
+                type="text"
+                name="nome"
+                placeholder="Nome prodotto"
+                value={trashFilters.nome}
+                onChange={(e) => setTrashFilters((prev) => ({ ...prev, nome: e.target.value }))}
+              />
+              <input
+                type="text"
+                name="sku"
+                placeholder="SKU"
+                value={trashFilters.sku}
+                onChange={(e) => setTrashFilters((prev) => ({ ...prev, sku: e.target.value }))}
+              />
+              <input
+                type="text"
+                name="ean"
+                placeholder="EAN"
+                value={trashFilters.ean}
+                onChange={(e) => setTrashFilters((prev) => ({ ...prev, ean: e.target.value }))}
+              />
+              <input
+                type="text"
+                name="categoria"
+                placeholder="Categoria"
+                value={trashFilters.categoria}
+                onChange={(e) => setTrashFilters((prev) => ({ ...prev, categoria: e.target.value }))}
+              />
+              <input
+                type="text"
+                name="fornitore"
+                placeholder="Nome fornitore"
+                value={trashFilters.fornitore}
+                onChange={(e) => setTrashFilters((prev) => ({ ...prev, fornitore: e.target.value }))}
+              />
+              {(trashFilters.nome || trashFilters.sku || trashFilters.ean || trashFilters.categoria || trashFilters.fornitore) && (
+                <button
+                  type="button"
+                  className="icon-button icon-button-secondary"
+                  onClick={() => setTrashFilters({ nome: '', sku: '', ean: '', categoria: '', fornitore: '' })}
+                >
+                  Azzera filtri
+                </button>
+              )}
+            </div>
+            {loadingDeletedProducts ? (
+              <p className="muted">Caricamento...</p>
+            ) : deletedProducts.length === 0 ? (
+              <p className="muted">Cestino vuoto.</p>
+            ) : filteredDeletedProducts.length === 0 ? (
+              <p className="muted">Nessun prodotto trovato con i filtri impostati.</p>
+            ) : (
+              <div className="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Nome</th>
+                      <th>Categoria</th>
+                      <th>Eliminato il</th>
+                      <th>Azioni</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredDeletedProducts.map((p) => (
+                      <tr key={`deleted-${p.id}`}>
+                        <td>{p.sku || '—'}</td>
+                        <td>{p.nome || '—'}</td>
+                        <td>{p.categoria?.nome || '—'}</td>
+                        <td>{p.deletedAt ? new Date(p.deletedAt).toLocaleString() : '—'}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="icon-button icon-button-secondary"
+                            title="Ripristina articolo nel catalogo"
+                            disabled={savingProduct}
+                            onClick={() => handleRestoreDeletedProduct(p.id)}
+                          >
+                            ↩ Ripristina
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         )}
       </main>
